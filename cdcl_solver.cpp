@@ -30,6 +30,7 @@ void Variable::set(Value value, int bd) {
         }
         
         if (cl->watched1->value != Value::unset && cl->watched2->value != Value::unset) {
+            learn_clause(cl);
             backtrack();
             return;
         } else {
@@ -62,6 +63,20 @@ vector<Variable> variables;
 deque<Clause> clauses;  // uses deque instead of vector to avoid dangling pointers
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
+
+void add_clause(const set<int>& lits_set) {
+    vector<int> lits;
+    for (int lit: lits_set) { lits.push_back(lit); }
+    clauses.push_back(Clause{lits, lit_to_var(lits[0]), lit_to_var(lits.back())});
+    Clause* cl = &clauses.back();
+    if (lits.size() == 1) { unit_clauses.push_back(cl); }
+    else {
+        int first = lits[0];
+        int second = lits.back();
+        (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
+        (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
+    }
+}
 
 void fromFile(string path) {
     ifstream file = ifstream(path);
@@ -110,20 +125,43 @@ void fromFile(string path) {
                 }
             }
             if (tautology) { continue; }
-            vector<int> lits;
-            for (int lit: lits_set) { lits.push_back(lit); }
-            clauses.push_back(Clause{lits, lit_to_var(lits[0]), lit_to_var(lits.back())});
-            Clause* cl = &clauses.back();
-            if (lits.size() == 1) { unit_clauses.push_back(cl); }
-            else {
-                int first = lits[0];
-                int second = lits.back();
-                (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
-                (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
-            }
             
+            add_clause(lits_set);
         }
 
         assert(variables.size() == num_vars+1);
+    }
+}
+
+void resolution(Clause* cl, set<int>& lits, Variable* var) {
+    for (int lit: cl->lits) {
+        if (lit_to_var(lit) == var) {
+            lits.erase(-lit);
+            continue;
+        }
+        lits.insert(lit);
+    }
+}
+
+void learn_clause(Clause* cl) {
+    int counter = assignments.size()-1;
+    set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
+    while (true) {
+        Variable* var = assignments[counter];
+        int max_bd = var->bd;
+        resolution(var->reason, conflict_cl, var);
+        int with_max_bd = 0;
+        for (int lit: conflict_cl) {
+            if (lit_to_var(lit)->bd == max_bd) {
+                ++with_max_bd;
+            }
+            if (with_max_bd > 1) { break; }
+        }
+        
+        if (with_max_bd == 1) {
+            add_clause(conflict_cl);
+            break;
+        }
+        --counter;
     }
 }
