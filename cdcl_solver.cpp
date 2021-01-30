@@ -4,6 +4,74 @@ vector<Variable> variables;
 deque<Clause> clauses;  // uses deque instead of vector to avoid dangling pointers
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
+Heap unassigned_vars;
+Heuristic heu = Heuristic::none;
+
+bool greater_than(Variable* v1, Variable* v2) {
+    switch(heu) {
+        case Heuristic::none:
+            // Pick a variable randomly
+            return rand() % 2 == 0;
+    }
+}
+
+// Pick a polarity for a variable.
+Value pick_polarity(Variable* v) {
+    switch(heu) {
+        case Heuristic::none:
+            return rand()%2 == 0 ? Value::t : Value::f;
+    }
+}
+
+// Append a variable to the heap and re-sort the heap.
+void Heap::insert(Variable* var) {
+    heap.push_back(var);
+    var->heap_position = heap.size()-1;
+    move_up(var);
+}
+
+// Remove a variable from the heap and re-sort the heap.
+void Heap::remove(Variable* var) {
+    Variable* end_var = heap[heap.size()-1];
+    swap(heap[var->heap_position], heap[heap.size()-1]);  // First swap the to-be-removed variable with the last variable.
+    heap.pop_back();
+    end_var->heap_position = var->heap_position;
+    move_down(end_var);
+}
+
+// When a variable's priority is bigger than its parent's, it percolates up in the heap.
+void Heap::move_up(Variable* var) {
+    int var_ind = var->heap_position;
+    while (var_ind > 1) {
+        Variable* parent = heap[parent_ind(var_ind)];
+        if (greater_than(var, parent)) {
+            swap(heap[var_ind], heap[parent_ind(var_ind)]);
+            parent->heap_position = var_ind;
+            var_ind = parent_ind(var_ind);
+        } else { break; }
+    }
+    var->heap_position = var_ind;
+}
+
+// When a variable's priority is smaller than its children's, it percolates down in the heap.
+void Heap::move_down(Variable* var) {
+    int var_ind = var->heap_position;
+    while (true) {
+        int max_child_ind = this->max_child_ind(var_ind);
+        if (var_ind == max_child_ind || !greater_than(heap[max_child_ind], heap[var_ind])) { 
+            break;
+        } else {
+            swap(heap[var_ind], heap[max_child_ind]);
+            heap[var_ind]->heap_position = var_ind;
+            var_ind = max_child_ind;
+        }
+    }
+    heap[var_ind]->heap_position = var_ind;
+}
+
+Variable* Heap::max() {
+    return this->heap[1];
+}
 
 Variable* lit_to_var(int lit) {
     return &variables[abs(lit)];
@@ -25,6 +93,7 @@ void Variable::set(Value value, int bd) {
     this->value = value;
     this->bd = bd;
     assignments.push_back(this);
+    unassigned_vars.remove(this);
 
     vector<Clause*>& watched_occ = value == Value::t ? neg_watched_occ : pos_watched_occ;  
     for (int i = 0; i < watched_occ.size();) {
@@ -70,6 +139,7 @@ void Variable::unset() {
     value = Value::unset;
     bd = -1;
     reason = nullptr;
+    unassigned_vars.insert(this);
 }
 
 Clause* add_unit_clause(vector<int> lits) {
