@@ -68,6 +68,8 @@ void Variable::set(Value value, int bd) {
 
 void Variable::unset() {
     value = Value::unset;
+    bd = -1;
+    reason = nullptr;
 }
 
 Clause* add_unit_clause(vector<int> lits) {
@@ -213,6 +215,7 @@ void unit_prop() {
         for (int lit: cl->lits) {
             Variable* var = lit_to_var(lit);
             if (var->value == Value::unset) {  // A clause does not keep track of which literals are unassigned.
+                var->reason = cl;
                 int cur_bd = assignments.empty() ? 0 : assignments.back()->bd;
                 if (lit > 0) {
                     var->set(Value::t, cur_bd);

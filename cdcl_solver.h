@@ -29,11 +29,11 @@ enum class Value {
 };
 
 struct Variable {
-    int bd = 0;
+    int bd = -1;
     Value value = Value::unset;
     vector<Clause*> pos_watched_occ;
     vector<Clause*> neg_watched_occ;
-    Clause* reason;
+    Clause* reason = nullptr;
     
     int id();
     int var_to_lit();
@@ -42,5 +42,7 @@ struct Variable {
 };
 
 void backtrack(int, Clause*);
+
+void unit_prop();
 
 #endif
