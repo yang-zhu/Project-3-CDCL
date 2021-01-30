@@ -1,5 +1,9 @@
 #include "cdcl_solver.h"
 
+vector<Variable> variables;
+deque<Clause> clauses;  // uses deque instead of vector to avoid dangling pointers
+vector<Variable*> assignments;
+vector<Clause*> unit_clauses;
 
 Variable* lit_to_var(int lit) {
     return &variables[abs(lit)];
@@ -7,6 +11,14 @@ Variable* lit_to_var(int lit) {
 
 Value make_lit_true(int lit) {
     return lit > 0 ? Value::t : Value::f;
+}
+
+int Variable::id() {
+    return this - &variables[0];
+}
+
+int Variable::var_to_lit() {
+    return this->value==Value::t ? this->id() : -(this->id());
 }
 
 void Variable::set(Value value, int bd) {
@@ -31,7 +43,6 @@ void Variable::set(Value value, int bd) {
         
         if (cl->watched1->value != Value::unset && cl->watched2->value != Value::unset) {
             learn_clause(cl);
-            backtrack();
             return;
         } else {
             Variable* old_watched1 = cl->watched1;
@@ -59,23 +70,17 @@ void Variable::unset() {
     value = Value::unset;
 }
 
-vector<Variable> variables;
-deque<Clause> clauses;  // uses deque instead of vector to avoid dangling pointers
-vector<Variable*> assignments;
-vector<Clause*> unit_clauses;
-
-void add_clause(const set<int>& lits_set) {
-    vector<int> lits;
-    for (int lit: lits_set) { lits.push_back(lit); }
-    clauses.push_back(Clause{lits, lit_to_var(lits[0]), lit_to_var(lits.back())});
+void add_unit_clause(vector<int> lits) {
+    clauses.push_back(Clause{lits, nullptr, nullptr});
     Clause* cl = &clauses.back();
-    if (lits.size() == 1) { unit_clauses.push_back(cl); }
-    else {
-        int first = lits[0];
-        int second = lits.back();
-        (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
-        (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
-    }
+    unit_clauses.push_back(cl); 
+}
+
+void add_clause(const vector<int>& lits, int first, int second) {
+    clauses.push_back(Clause{lits, lit_to_var(first), lit_to_var(second)});
+    Clause* cl = &clauses.back();
+    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
+    (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);    
 }
 
 void fromFile(string path) {
@@ -126,7 +131,9 @@ void fromFile(string path) {
             }
             if (tautology) { continue; }
             
-            add_clause(lits_set);
+            vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
+            if (lits.size() == 1) { add_unit_clause(lits); }
+            else { add_clause(lits, lits[0], lits.back()); }
         }
 
         assert(variables.size() == num_vars+1);
@@ -148,20 +155,48 @@ void learn_clause(Clause* cl) {
     set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
     while (true) {
         Variable* var = assignments[counter];
-        int max_bd = var->bd;
-        resolution(var->reason, conflict_cl, var);
-        int with_max_bd = 0;
-        for (int lit: conflict_cl) {
-            if (lit_to_var(lit)->bd == max_bd) {
-                ++with_max_bd;
+        if (conflict_cl.count(-var->var_to_lit()) == 1) {
+            int max_bd = var->bd;
+            resolution(var->reason, conflict_cl, var);
+            int with_max_bd = 0;
+            int assertion_level = 0;
+            for (int lit: conflict_cl) {
+                int lit_bd = lit_to_var(lit)->bd;
+                if (lit_bd == max_bd) {
+                    ++with_max_bd;
+                } else {
+                    assertion_level = max(assertion_level, lit_bd);
+                }
+                if (with_max_bd > 1) { break; }
             }
-            if (with_max_bd > 1) { break; }
-        }
-        
-        if (with_max_bd == 1) {
-            add_clause(conflict_cl);
-            break;
+            
+            if (with_max_bd == 1) {
+                vector<int> learned_cl = vector<int>(conflict_cl.begin(), conflict_cl.end());
+                if (learned_cl.size() == 1) {
+                    add_unit_clause(learned_cl); 
+                } else {
+                    vector<Variable*> watched;
+                    for(int i = 0; i < 2;) {
+                        if (conflict_cl.count(-assignments[counter]->var_to_lit()) == 1) {
+                            watched.push_back(assignments[counter]);
+                            ++i;
+                        }
+                        --counter;
+                    }
+                    add_clause(learned_cl, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());                   
+                }                
+                backtrack(assertion_level);
+                return;
+            }
         }
         --counter;
+    }
+}
+
+void backtrack(int depth) {
+    unit_clauses.clear();
+    while(assignments.back()->bd > depth) {
+        assignments.back()->unset();
+        assignments.pop_back();
     }
 }

@@ -35,6 +35,8 @@ struct Variable {
     vector<Clause*> neg_watched_occ;
     Clause* reason;
     
+    int id();
+    int var_to_lit();
     void set(Value, int);
     void unset();
 };
