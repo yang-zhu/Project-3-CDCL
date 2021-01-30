@@ -41,4 +41,6 @@ struct Variable {
     void unset();
 };
 
+void backtrack(int, Clause*);
+
 #endif

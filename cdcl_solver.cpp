@@ -70,17 +70,19 @@ void Variable::unset() {
     value = Value::unset;
 }
 
-void add_unit_clause(vector<int> lits) {
+Clause* add_unit_clause(vector<int> lits) {
     clauses.push_back(Clause{lits, nullptr, nullptr});
     Clause* cl = &clauses.back();
-    unit_clauses.push_back(cl); 
+    unit_clauses.push_back(cl);
+    return cl;
 }
 
-void add_clause(const vector<int>& lits, int first, int second) {
+Clause* add_clause(const vector<int>& lits, int first, int second) {
     clauses.push_back(Clause{lits, lit_to_var(first), lit_to_var(second)});
     Clause* cl = &clauses.back();
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
-    (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);    
+    (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
+    return cl;   
 }
 
 void fromFile(string path) {
@@ -171,9 +173,10 @@ void learn_clause(Clause* cl) {
             }
             
             if (with_max_bd == 1) {
-                vector<int> learned_cl = vector<int>(conflict_cl.begin(), conflict_cl.end());
-                if (learned_cl.size() == 1) {
-                    add_unit_clause(learned_cl); 
+                vector<int> learned_cl_lits = vector<int>(conflict_cl.begin(), conflict_cl.end());
+                Clause* learned_cl;
+                if (learned_cl_lits.size() == 1) {
+                    learned_cl = add_unit_clause(learned_cl_lits); 
                 } else {
                     vector<Variable*> watched;
                     for(int i = 0; i < 2;) {
@@ -183,9 +186,9 @@ void learn_clause(Clause* cl) {
                         }
                         --counter;
                     }
-                    add_clause(learned_cl, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());                   
+                    learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());                   
                 }                
-                backtrack(assertion_level);
+                backtrack(assertion_level, learned_cl);
                 return;
             }
         }
@@ -193,10 +196,11 @@ void learn_clause(Clause* cl) {
     }
 }
 
-void backtrack(int depth) {
+void backtrack(int depth, Clause* learned_cl) {
     unit_clauses.clear();
     while(assignments.back()->bd > depth) {
         assignments.back()->unset();
         assignments.pop_back();
     }
+    unit_clauses.push_back(learned_cl);
 }
