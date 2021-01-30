@@ -204,3 +204,23 @@ void backtrack(int depth, Clause* learned_cl) {
     }
     unit_clauses.push_back(learned_cl);
 }
+
+// Unit propagation
+void unit_prop() {
+    while (!unit_clauses.empty()) {
+        Clause* cl = unit_clauses.back();
+        unit_clauses.pop_back();
+        for (int lit: cl->lits) {
+            Variable* var = lit_to_var(lit);
+            if (var->value == Value::unset) {  // A clause does not keep track of which literals are unassigned.
+                int cur_bd = assignments.empty() ? 0 : assignments.back()->bd;
+                if (lit > 0) {
+                    var->set(Value::t, cur_bd);
+                } else {
+                    var->set(Value::f, cur_bd);
+                }
+                break;
+            }
+        }
+    }
+}
