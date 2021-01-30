@@ -143,8 +143,10 @@ void Variable::unset() {
 }
 
 Clause* add_unit_clause(vector<int> lits) {
-    clauses.push_back(Clause{lits, nullptr, nullptr});
+    int first = lits[0];
+    clauses.push_back(Clause{lits, lit_to_var(first), lit_to_var(first)});
     Clause* cl = &clauses.back();
+    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     unit_clauses.push_back(cl);
     return cl;
 }
@@ -227,8 +229,11 @@ void resolution(Clause* cl, set<int>& lits, Variable* var) {
 void learn_clause(Clause* cl) {
     int counter = assignments.size()-1;
     set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
-    while (true) {
+    while (counter >= 0) {
         Variable* var = assignments[counter];
+        if (var->bd == 0) {
+            break;
+        }
         if (conflict_cl.count(-var->var_to_lit()) == 1) {
             int max_bd = var->bd;
             resolution(var->reason, conflict_cl, var);
@@ -266,11 +271,13 @@ void learn_clause(Clause* cl) {
         }
         --counter;
     }
+    cout << "s UNSATISFIABLE\n";
+    exit(0);
 }
 
 void backtrack(int depth, Clause* learned_cl) {
     unit_clauses.clear();
-    while(assignments.back()->bd > depth) {
+    while(!assignments.empty() && assignments.back()->bd > depth) {
         assignments.back()->unset();
         assignments.pop_back();
     }
@@ -296,4 +303,51 @@ void unit_prop() {
             }
         }
     }
+}
+
+int main(int argc, const char* argv[]) {
+    string filename;
+     
+    for (int i = 1; i < argc; ++i) {
+        string option = string(argv[i]);
+        
+        if (option[0] == '-') {
+            if (option == "-vsids") { heu = Heuristic::vsids; }
+            else if (option == "-vmtf") { heu = Heuristic::vmtf; }
+            else {
+                cout << "Unknown argument: " << option << "\nPossible options:\n";
+                cout << "-vsids\tuse the VSIDS heuristic\n";
+                cout << "-vmtf\tuse the VMTF heuristic\n";
+                exit(1);
+            }
+        } else { filename = option; }
+    }
+    // When no file name is given.
+    if (filename == "") {
+        cout << "No filename specified\n";
+        cout << "usage: cdcl_solver <path to a cnf file> [heuristics]\n";
+        exit(1);
+    }
+
+    fromFile(filename);
+    // Fill the unassigned_vars heap. Originally all variables are unassigned.
+    for (int i = 1; i < variables.size(); ++i) {
+        unassigned_vars.insert(&variables[i]);
+    }
+    // There could be unit clauses in the original formula. If unit-propagation and pure literal elimination solve the whole formula, the following while-loop will not be executed.
+    unit_prop();
+    
+    while (variables.size()-1 != assignments.size()) {
+        // Always pick the variable of highest priority to branch on.
+        Variable* picked_var = unassigned_vars.max();
+        picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
+        unit_prop();
+    }
+    cout << "s SATISFIABLE\n";
+    cout << "v ";
+    for (int i = 1; i < variables.size(); ++i) {
+        cout << ((variables[i].value == Value::t) ? i : -i) << " ";
+    }
+    cout << "0\n";
+    return 0;
 }

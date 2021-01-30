@@ -68,6 +68,8 @@ struct Heap {  // a max-heap
     Variable* max();
 };
 
+void learn_clause(Clause*);
+
 void backtrack(int, Clause*);
 
 void unit_prop();
