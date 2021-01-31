@@ -6,12 +6,15 @@ vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 Heuristic heu = Heuristic::none;
+int branchings = 0;
 
 bool greater_than(Variable* v1, Variable* v2) {
     switch(heu) {
         case Heuristic::none:
             // Pick a variable randomly
             return rand() % 2 == 0;
+        case Heuristic::vsids:
+            return max(v1->vs_pos_score, v1->vs_neg_score) > max(v2->vs_pos_score, v2->vs_neg_score);
     }
 }
 
@@ -20,6 +23,8 @@ Value pick_polarity(Variable* v) {
     switch(heu) {
         case Heuristic::none:
             return rand()%2 == 0 ? Value::t : Value::f;
+        case Heuristic::vsids:
+            return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
     }
 }
 
@@ -210,6 +215,9 @@ void fromFile(string path) {
             vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
             if (lits.size() == 1) { add_unit_clause(lits); }
             else { add_clause(lits, lits[0], lits.back()); }
+            for (int lit: lits) {
+                (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
+            }
         }
 
         assert(variables.size() == num_vars+1);
@@ -223,6 +231,12 @@ void resolution(Clause* cl, set<int>& lits, Variable* var) {
             continue;
         }
         lits.insert(lit);
+    }
+}
+
+void branching_count_incr(const vector<int>& lits) {
+    for (int lit: lits) {
+        (lit > 0 ? lit_to_var(lit)->vs_pos_count : lit_to_var(lit)->vs_neg_count) += 1;
     }
 }
 
@@ -253,7 +267,7 @@ void learn_clause(Clause* cl) {
                 vector<int> learned_cl_lits = vector<int>(conflict_cl.begin(), conflict_cl.end());
                 Clause* learned_cl;
                 if (learned_cl_lits.size() == 1) {
-                    learned_cl = add_unit_clause(learned_cl_lits); 
+                    learned_cl = add_unit_clause(learned_cl_lits);
                 } else {
                     vector<Variable*> watched;
                     for(int i = 0; i < 2;) {
@@ -263,8 +277,9 @@ void learn_clause(Clause* cl) {
                         }
                         --counter;
                     }
-                    learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());                   
-                }                
+                    learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
+                }
+                branching_count_incr(learned_cl_lits);               
                 backtrack(assertion_level, learned_cl);
                 return;
             }
@@ -313,11 +328,11 @@ int main(int argc, const char* argv[]) {
         
         if (option[0] == '-') {
             if (option == "-vsids") { heu = Heuristic::vsids; }
-            else if (option == "-vmtf") { heu = Heuristic::vmtf; }
+            //else if (option == "-vmtf") { heu = Heuristic::vmtf; }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
                 cout << "-vsids\tuse the VSIDS heuristic\n";
-                cout << "-vmtf\tuse the VMTF heuristic\n";
+                //cout << "-vmtf\tuse the VMTF heuristic\n";
                 exit(1);
             }
         } else { filename = option; }
@@ -337,7 +352,22 @@ int main(int argc, const char* argv[]) {
     // There could be unit clauses in the original formula. If unit-propagation and pure literal elimination solve the whole formula, the following while-loop will not be executed.
     unit_prop();
     
-    while (variables.size()-1 != assignments.size()) {
+    while (variables.size()-1 != assignments.size()) {   
+        if (heu == Heuristic::vsids) {     
+            if (branchings <= 225) {
+                ++branchings;        
+            } else {
+                for(Variable var: variables) {
+                    var.vs_pos_score = var.vs_pos_score/2 + var.vs_pos_count;
+                    var.vs_neg_score = var.vs_neg_score/2 + var.vs_neg_count;
+                    var.vs_pos_count = 0;
+                    var.vs_neg_count = 0;
+                    branchings = 0;
+                }
+                sort(unassigned_vars.heap.begin()+1, unassigned_vars.heap.end(), greater_than);
+            }
+        }
+
         // Always pick the variable of highest priority to branch on.
         Variable* picked_var = unassigned_vars.max();
         picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);

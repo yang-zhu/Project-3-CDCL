@@ -35,6 +35,10 @@ struct Variable {
     vector<Clause*> neg_watched_occ;
     Clause* reason = nullptr;
     int heap_position = 0;  // A variable's position in the heap, which is used to update the heap.
+    double vs_pos_score = 0;
+    double vs_neg_score = 0;
+    int vs_pos_count = 0;
+    int vs_neg_count = 0;
     
     int id();
     int var_to_lit();
@@ -43,7 +47,7 @@ struct Variable {
 };
 
 enum class Heuristic {
-    none, vsids, vmtf
+    none, vsids//, vmtf
 };
 
 bool greater_than(Variable*, Variable*);
