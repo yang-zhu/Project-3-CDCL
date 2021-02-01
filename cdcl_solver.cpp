@@ -7,6 +7,7 @@ vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 Heuristic heu = Heuristic::none;
 int branchings = 0;
+double top_priority = 0;
 
 bool greater_than(Variable* v1, Variable* v2) {
     switch(heu) {
@@ -14,7 +15,9 @@ bool greater_than(Variable* v1, Variable* v2) {
             // Pick a variable randomly
             return rand() % 2 == 0;
         case Heuristic::vsids:
-            return max(v1->vs_pos_score, v1->vs_neg_score) > max(v2->vs_pos_score, v2->vs_neg_score);
+            return max(v1->heu_pos_score, v1->heu_neg_score) > max(v2->heu_pos_score, v2->heu_neg_score);
+        case Heuristic::vmtf:
+            return max(v1->vm_pos_priority, v2->vm_neg_priority) > max(v2->vm_pos_priority, v2->vm_neg_priority);
     }
 }
 
@@ -24,7 +27,9 @@ Value pick_polarity(Variable* v) {
         case Heuristic::none:
             return rand()%2 == 0 ? Value::t : Value::f;
         case Heuristic::vsids:
-            return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
+            return (v->heu_pos_score > v->heu_neg_score) ? Value::t : Value::f;
+        case Heuristic::vmtf:
+            return (v->vm_pos_priority > v->vm_neg_priority) ? Value::t : Value::f;
     }
 }
 
@@ -216,10 +221,14 @@ void fromFile(string path) {
             if (lits.size() == 1) { add_unit_clause(lits); }
             else { add_clause(lits, lits[0], lits.back()); }
             for (int lit: lits) {
-                (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
+                (lit > 0 ? lit_to_var(lit)->heu_pos_score : lit_to_var(lit)->heu_neg_score) += 1;
             }
         }
-
+        top_priority = num_clauses;
+        for (Variable var: variables) {
+            var.vm_pos_priority = var.heu_pos_score;
+            var.vm_neg_priority = var.heu_neg_score;
+        }
         assert(variables.size() == num_vars+1);
     }
 }
@@ -279,7 +288,19 @@ void learn_clause(Clause* cl) {
                     }
                     learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
                 }
-                branching_count_incr(learned_cl_lits);               
+
+                if (heu == Heuristic::vsids) {
+                    branching_count_incr(learned_cl_lits);
+                }
+
+                if (heu == Heuristic::vmtf) {
+                    sort(learned_cl_lits.begin(), learned_cl_lits.end(), [](int l1, int l2) { return (l1 > 0 ? lit_to_var(l1)->vm_pos_priority : lit_to_var(l1)->vm_neg_priority) < (l2 > 0 ? lit_to_var(l2)->vm_pos_priority : lit_to_var(l2)->vm_neg_priority); });
+
+                    for (int i = 0; i < min<int>(learned_cl_lits.size(), 8); ++i) {
+                        (learned_cl_lits[i] > 0 ? lit_to_var(learned_cl_lits[i])->vm_pos_priority : lit_to_var(learned_cl_lits[i])->vm_neg_priority) = top_priority + i;
+                    }
+                    top_priority = top_priority + min<int>(learned_cl_lits.size(), 8);
+                }         
                 backtrack(assertion_level, learned_cl);
                 return;
             }
@@ -328,11 +349,11 @@ int main(int argc, const char* argv[]) {
         
         if (option[0] == '-') {
             if (option == "-vsids") { heu = Heuristic::vsids; }
-            //else if (option == "-vmtf") { heu = Heuristic::vmtf; }
+            else if (option == "-vmtf") { heu = Heuristic::vmtf; }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
                 cout << "-vsids\tuse the VSIDS heuristic\n";
-                //cout << "-vmtf\tuse the VMTF heuristic\n";
+                cout << "-vmtf\tuse the VMTF heuristic\n";
                 exit(1);
             }
         } else { filename = option; }
@@ -358,8 +379,8 @@ int main(int argc, const char* argv[]) {
                 ++branchings;        
             } else {
                 for(Variable var: variables) {
-                    var.vs_pos_score = var.vs_pos_score/2 + var.vs_pos_count;
-                    var.vs_neg_score = var.vs_neg_score/2 + var.vs_neg_count;
+                    var.heu_pos_score = var.heu_pos_score/2 + var.vs_pos_count;
+                    var.heu_neg_score = var.heu_neg_score/2 + var.vs_neg_count;
                     var.vs_pos_count = 0;
                     var.vs_neg_count = 0;
                     branchings = 0;
