@@ -1,7 +1,8 @@
 #include "cdcl_solver.h"
 
 vector<Variable> variables;
-deque<Clause> clauses;  // uses deque instead of vector to avoid dangling pointers
+vector<Clause*> clauses;  // uses deque instead of vector to avoid dangling pointers
+int orig_clause_num = 0;
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
@@ -42,6 +43,11 @@ void Heap::insert(Variable* var) {
 
 // Remove a variable from the heap and re-sort the heap.
 void Heap::remove(Variable* var) {
+    assert(var->heap_position < heap.size() && heap[var->heap_position] == var);
+    if (var->heap_position == heap.size()-1) {
+        heap.pop_back();
+        return;
+    }
     Variable* end_var = heap[heap.size()-1];
     swap(heap[var->heap_position], heap[heap.size()-1]);  // First swap the to-be-removed variable with the last variable.
     heap.pop_back();
@@ -51,6 +57,7 @@ void Heap::remove(Variable* var) {
 
 // When a variable's priority is bigger than its parent's, it percolates up in the heap.
 void Heap::move_up(Variable* var) {
+    assert(var->heap_position < heap.size() && heap[var->heap_position] == var);
     int var_ind = var->heap_position;
     while (var_ind > 1) {
         Variable* parent = heap[parent_ind(var_ind)];
@@ -65,6 +72,7 @@ void Heap::move_up(Variable* var) {
 
 // When a variable's priority is smaller than its children's, it percolates down in the heap.
 void Heap::move_down(Variable* var) {
+    assert(var->heap_position < heap.size() && heap[var->heap_position] == var);
     int var_ind = var->heap_position;
     while (true) {
         int max_child_ind = this->max_child_ind(var_ind);
@@ -130,6 +138,7 @@ void Variable::set(Value value, int bd) {
                 Variable* var = lit_to_var(cl->lits[j]);
                 if (var == cl->watched1 || var == cl->watched2) { continue; }
                 else if (var->value == Value::unset) {
+                    assert(this == cl->watched1 || this == cl->watched2);
                     (cl->watched1 == this ? cl->watched1 : cl->watched2) = var;
                     swap(watched_occ[i], watched_occ.back());
                     watched_occ.pop_back();
@@ -154,16 +163,16 @@ void Variable::unset() {
 
 Clause* add_unit_clause(vector<int> lits) {
     int first = lits[0];
-    clauses.push_back(Clause{lits, lit_to_var(first), lit_to_var(first)});
-    Clause* cl = &clauses.back();
+    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});
+    Clause* cl = clauses.back();
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     unit_clauses.push_back(cl);
     return cl;
 }
 
 Clause* add_clause(const vector<int>& lits, int first, int second) {
-    clauses.push_back(Clause{lits, lit_to_var(first), lit_to_var(second)});
-    Clause* cl = &clauses.back();
+    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(second)});
+    Clause* cl = clauses.back();
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
     return cl;   
@@ -224,6 +233,9 @@ void fromFile(string path) {
                 (lit > 0 ? lit_to_var(lit)->heu_pos_score : lit_to_var(lit)->heu_neg_score) += 1;
             }
         }
+        
+        orig_clause_num = clauses.size();
+
         top_priority = num_clauses;
         for (Variable var: variables) {
             var.vm_pos_priority = var.heu_pos_score;
@@ -341,6 +353,40 @@ void unit_prop() {
     }
 }
 
+void delete_watched_occ(vector<Clause*>& watched_occ) {
+    watched_occ.erase(remove_if(watched_occ.begin(), watched_occ.end(), [](Clause* cl) { return cl->to_be_deleted; }), watched_occ.end());
+}
+
+void deletion() {
+    int clauses_before = clauses.size();
+    for (int i = orig_clause_num; i < clauses.size(); ++i) {
+        if (clauses[i]->lits.size() > 5) {
+            int count = 0;
+            for (int lit: clauses[i]->lits) {
+                if (lit_to_var(lit)->value == Value::unset) { ++count; }
+                if (count == 2) {
+                    clauses[i]->to_be_deleted = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (Variable& var: variables) {
+        delete_watched_occ(var.pos_watched_occ);
+        delete_watched_occ(var.neg_watched_occ);
+    }
+    for (int i = orig_clause_num; i < clauses.size();) {
+        if (clauses[i]->to_be_deleted) {
+            delete clauses[i];
+            swap(clauses[i], clauses.back());
+            clauses.pop_back();
+        } else {
+            ++i;
+        }
+    }
+}
+
 int main(int argc, const char* argv[]) {
     string filename;
      
@@ -388,6 +434,8 @@ int main(int argc, const char* argv[]) {
                 sort(unassigned_vars.heap.begin()+1, unassigned_vars.heap.end(), greater_than);
             }
         }
+
+        if ((clauses.size()-orig_clause_num) % 100 == 0) { deletion(); }
 
         // Always pick the variable of highest priority to branch on.
         Variable* picked_var = unassigned_vars.max();

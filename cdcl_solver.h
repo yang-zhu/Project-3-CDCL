@@ -21,6 +21,7 @@ struct Clause {
     vector<int> lits;
     Variable* watched1;
     Variable* watched2;
+    bool to_be_deleted = false;
 };
 
 // A variable is either unset, false or true.
