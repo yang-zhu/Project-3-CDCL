@@ -1,36 +1,36 @@
 #include "cdcl_solver.h"
 
 vector<Variable> variables;
-vector<Clause*> clauses;  // uses deque instead of vector to avoid dangling pointers
-int orig_clause_num = 0;
+vector<Clause*> clauses;
+int orig_clause_num = 0;  // number of clauses contained in the orginal formula
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
-Heuristic heu = Heuristic::none;
+Heuristic heu = Heuristic::vmtf;
 int branchings = 0;
-double top_priority = 0;
+double max_vm_score = 0;
+int deletion_count_down = 100;
 
 bool greater_than(Variable* v1, Variable* v2) {
     switch(heu) {
-        case Heuristic::none:
-            // Pick a variable randomly
-            return rand() % 2 == 0;
-        case Heuristic::vsids:
-            return max(v1->heu_pos_score, v1->heu_neg_score) > max(v2->heu_pos_score, v2->heu_neg_score);
+        case Heuristic::vsids1:
+            return max(v1->vs_pos_score, v1->vs_neg_score) > max(v2->vs_pos_score, v2->vs_neg_score);
+        case Heuristic::vsids2:
+            return max(v1->pos_count, v1->neg_count) > max(v2->pos_count, v2->neg_count);
         case Heuristic::vmtf:
-            return max(v1->vm_pos_priority, v2->vm_neg_priority) > max(v2->vm_pos_priority, v2->vm_neg_priority);
+            return max(v1->vm_pos_score, v2->vm_neg_score) > max(v2->vm_pos_score, v2->vm_neg_score);
     }
 }
 
 // Pick a polarity for a variable.
 Value pick_polarity(Variable* v) {
     switch(heu) {
-        case Heuristic::none:
-            return rand()%2 == 0 ? Value::t : Value::f;
-        case Heuristic::vsids:
-            return (v->heu_pos_score > v->heu_neg_score) ? Value::t : Value::f;
+        case Heuristic::vsids1:
+            return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
+        case Heuristic::vsids2:
+            return (v->pos_count > v->neg_count) ? Value::t : Value::f;
         case Heuristic::vmtf:
-            return (v->vm_pos_priority > v->vm_neg_priority) ? Value::t : Value::f;
+            return (v->vm_pos_score > v->vm_neg_score) ? Value::t : Value::f;
     }
 }
 
@@ -95,11 +95,8 @@ Variable* lit_to_var(int lit) {
     return &variables[abs(lit)];
 }
 
-Value make_lit_true(int lit) {
-    return lit > 0 ? Value::t : Value::f;
-}
-
 int Variable::id() {
+    // a variable's position in the variables vector (starting from 1), which corresponds to the absolute value of its literal
     return this - &variables[0];
 }
 
@@ -116,9 +113,12 @@ void Variable::set(Value value, int bd) {
     vector<Clause*>& watched_occ = value == Value::t ? neg_watched_occ : pos_watched_occ;  
     for (int i = 0; i < watched_occ.size();) {
         Clause* cl = watched_occ[i];
+
+        // when the clause is satisfied
         bool found_true = false;
         for (int lit: cl->lits) {
-            if (lit_to_var(lit)->value == make_lit_true(lit)) {
+            Value lit_true = lit > 0 ? Value::t : Value::f;
+            if (lit_to_var(lit)->value == lit_true) {
                 found_true = true;
                 break;
             }
@@ -129,6 +129,7 @@ void Variable::set(Value value, int bd) {
         }
         
         if (cl->watched1->value != Value::unset && cl->watched2->value != Value::unset) {
+            // when all literals in the clause are set to false -> conflict arises
             learn_clause(cl);
             return;
         } else {
@@ -139,13 +140,17 @@ void Variable::set(Value value, int bd) {
                 if (var == cl->watched1 || var == cl->watched2) { continue; }
                 else if (var->value == Value::unset) {
                     assert(this == cl->watched1 || this == cl->watched2);
+                    // the two watched literals are not distinguished
                     (cl->watched1 == this ? cl->watched1 : cl->watched2) = var;
+                    // deletes the clause for the set literal
                     swap(watched_occ[i], watched_occ.back());
                     watched_occ.pop_back();
+                    // adds the clause to the watched occurrence vector of the new watched literal
                     (cl->lits[j] > 0 ? var->pos_watched_occ : var->neg_watched_occ).push_back(cl);
                     break;
                 }
             }
+            // If the watched literals are not changed, the clause is a unit clause.
             if (cl->watched1 == old_watched1 && cl->watched2 == old_watched2) { 
                 unit_clauses.push_back(cl);
                 ++i;
@@ -161,9 +166,10 @@ void Variable::unset() {
     unassigned_vars.insert(this);
 }
 
+
 Clause* add_unit_clause(vector<int> lits) {
     int first = lits[0];
-    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});
+    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
     Clause* cl = clauses.back();
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     unit_clauses.push_back(cl);
@@ -206,7 +212,6 @@ void fromFile(string path) {
             variables.push_back(Variable());
         }
 
-        // Fill the deque of clauses.
         for (int i = 0; i < num_clauses; ++i) {
             set<int> lits_set;  // removes duplicate literals; for detecting tautological clause
             int lit;
@@ -228,22 +233,31 @@ void fromFile(string path) {
             
             vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
             if (lits.size() == 1) { add_unit_clause(lits); }
+            // choose two arbitrary literals as the watched literals of the clause
             else { add_clause(lits, lits[0], lits.back()); }
+            
             for (int lit: lits) {
-                (lit > 0 ? lit_to_var(lit)->heu_pos_score : lit_to_var(lit)->heu_neg_score) += 1;
+                (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
             }
         }
         
         orig_clause_num = clauses.size();
 
-        top_priority = num_clauses;
-        for (Variable var: variables) {
-            var.vm_pos_priority = var.heu_pos_score;
-            var.vm_neg_priority = var.heu_neg_score;
+        if (heu == Heuristic::vmtf) {
+            max_vm_score = num_clauses;  // no literal's number of occurrences could exceed the number of clauses
+            for (Variable& var: variables) {
+                // VMTF initially sorts the literals according to the number of occurrences. To simulate this, we assign the number of occurences as initial score.
+                var.vm_pos_score = var.vs_pos_score;
+                var.vm_neg_score = var.vs_neg_score;
+                var.pos_count = var.vs_pos_score;
+                var.neg_count = var.vs_pos_score;
+            }
         }
+
         assert(variables.size() == num_vars+1);
     }
 }
+
 
 void resolution(Clause* cl, set<int>& lits, Variable* var) {
     for (int lit: cl->lits) {
@@ -251,16 +265,21 @@ void resolution(Clause* cl, set<int>& lits, Variable* var) {
             lits.erase(-lit);
             continue;
         }
-        lits.insert(lit);
+        lits.insert(lit);  // lits as a set will eliminate all the duplicate literals (the two clauses could have several shared literals)
     }
 }
 
-void branching_count_incr(const vector<int>& lits) {
+void count_incr(const vector<int>& lits) {
     for (int lit: lits) {
-        (lit > 0 ? lit_to_var(lit)->vs_pos_count : lit_to_var(lit)->vs_neg_count) += 1;
+        (lit > 0 ? lit_to_var(lit)->pos_count : lit_to_var(lit)->neg_count) += 1;
     }
 }
 
+double get_vm_count(int lit) {
+    return lit > 0 ? lit_to_var(lit)->pos_count : lit_to_var(lit)->neg_count;
+}
+
+// Derives an asserting conflict clause
 void learn_clause(Clause* cl) {
     int counter = assignments.size()-1;
     set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
@@ -269,7 +288,8 @@ void learn_clause(Clause* cl) {
         if (var->bd == 0) {
             break;
         }
-        if (conflict_cl.count(-var->var_to_lit()) == 1) {
+        // Only clauses that contribute to the conflict will be taken into account.
+        if (conflict_cl.count(-var->var_to_lit()) == 1) {  // the literal has to be false under the current assignment
             int max_bd = var->bd;
             resolution(var->reason, conflict_cl, var);
             int with_max_bd = 0;
@@ -291,6 +311,7 @@ void learn_clause(Clause* cl) {
                     learned_cl = add_unit_clause(learned_cl_lits);
                 } else {
                     vector<Variable*> watched;
+                    // The two watched literals in the new asserting conflict clause are the shallowest in the assignment stack. This way we make sure that they are the first to be unset in backtracking.
                     for(int i = 0; i < 2;) {
                         if (conflict_cl.count(-assignments[counter]->var_to_lit()) == 1) {
                             watched.push_back(assignments[counter]);
@@ -301,18 +322,21 @@ void learn_clause(Clause* cl) {
                     learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
                 }
 
-                if (heu == Heuristic::vsids) {
-                    branching_count_incr(learned_cl_lits);
-                }
-
+                // Increments the counters for the literals in the newly learned clause.
+                count_incr(learned_cl_lits); 
                 if (heu == Heuristic::vmtf) {
-                    sort(learned_cl_lits.begin(), learned_cl_lits.end(), [](int l1, int l2) { return (l1 > 0 ? lit_to_var(l1)->vm_pos_priority : lit_to_var(l1)->vm_neg_priority) < (l2 > 0 ? lit_to_var(l2)->vm_pos_priority : lit_to_var(l2)->vm_neg_priority); });
+                    // Sorts the literals descendingly according to their counters.
+                    sort(learned_cl_lits.begin(), learned_cl_lits.end(), [](int l1, int l2) { return get_vm_count(l1) > get_vm_count(l2); });
 
-                    for (int i = 0; i < min<int>(learned_cl_lits.size(), 8); ++i) {
-                        (learned_cl_lits[i] > 0 ? lit_to_var(learned_cl_lits[i])->vm_pos_priority : lit_to_var(learned_cl_lits[i])->vm_neg_priority) = top_priority + i;
+                    // Picks at most 8 literals to move to the front (increase their vmtf heuristic scores).
+                    int num_moved_vars = min<int>(learned_cl_lits.size(), 8);
+                    for (int i = 0; i < num_moved_vars; ++i) {
+                        // Adding max_vm_score makes sure that the new scores surpass all the other literals' scores -> move to the front of the list
+                        int lit = learned_cl_lits[i];
+                        (lit > 0 ? lit_to_var(lit)->vm_pos_score : lit_to_var(lit)->vm_neg_score) = max_vm_score + num_moved_vars - i;
                     }
-                    top_priority = top_priority + min<int>(learned_cl_lits.size(), 8);
-                }         
+                    max_vm_score = max_vm_score + num_moved_vars;
+                }
                 backtrack(assertion_level, learned_cl);
                 return;
             }
@@ -323,6 +347,7 @@ void learn_clause(Clause* cl) {
     exit(0);
 }
 
+// Backtracking
 void backtrack(int depth, Clause* learned_cl) {
     unit_clauses.clear();
     while(!assignments.empty() && assignments.back()->bd > depth) {
@@ -330,6 +355,7 @@ void backtrack(int depth, Clause* learned_cl) {
         assignments.pop_back();
     }
     unit_clauses.push_back(learned_cl);
+    --deletion_count_down;
 }
 
 // Unit propagation
@@ -341,6 +367,7 @@ void unit_prop() {
             Variable* var = lit_to_var(lit);
             if (var->value == Value::unset) {  // A clause does not keep track of which literals are unassigned.
                 var->reason = cl;
+                // cur_bd is the current global branching depth. Initially the branching depth is set to 0 for all literals in unit clauses.
                 int cur_bd = assignments.empty() ? 0 : assignments.back()->bd;
                 if (lit > 0) {
                     var->set(Value::t, cur_bd);
@@ -353,14 +380,16 @@ void unit_prop() {
     }
 }
 
+
 void delete_watched_occ(vector<Clause*>& watched_occ) {
     watched_occ.erase(remove_if(watched_occ.begin(), watched_occ.end(), [](Clause* cl) { return cl->to_be_deleted; }), watched_occ.end());
 }
 
 void deletion() {
+    // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
     int clauses_before = clauses.size();
     for (int i = orig_clause_num; i < clauses.size(); ++i) {
-        if (clauses[i]->lits.size() > 5) {
+        if (clauses[i]->lits.size() > 3) {
             int count = 0;
             for (int lit: clauses[i]->lits) {
                 if (lit_to_var(lit)->value == Value::unset) { ++count; }
@@ -371,14 +400,16 @@ void deletion() {
             }
         }
     }
-
     for (Variable& var: variables) {
+        // Removes the to-be-deleted learned clauses from the watched occurrences vector of every variable.
         delete_watched_occ(var.pos_watched_occ);
         delete_watched_occ(var.neg_watched_occ);
     }
     for (int i = orig_clause_num; i < clauses.size();) {
         if (clauses[i]->to_be_deleted) {
+            // first frees the memory on the heap
             delete clauses[i];
+            // then deletes the pointer from the clauses vector
             swap(clauses[i], clauses.back());
             clauses.pop_back();
         } else {
@@ -387,6 +418,7 @@ void deletion() {
     }
 }
 
+
 int main(int argc, const char* argv[]) {
     string filename;
      
@@ -394,11 +426,13 @@ int main(int argc, const char* argv[]) {
         string option = string(argv[i]);
         
         if (option[0] == '-') {
-            if (option == "-vsids") { heu = Heuristic::vsids; }
+            if (option == "-vsids1") { heu = Heuristic::vsids1; }
+            else if (option == "-vsids2") { heu = Heuristic::vsids2; }
             else if (option == "-vmtf") { heu = Heuristic::vmtf; }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
-                cout << "-vsids\tuse the VSIDS heuristic\n";
+                cout << "-vsids1\tuse the VSIDS heuristic\n";
+                cout << "-vsids2\tuse the VSIDS heuristic\n";
                 cout << "-vmtf\tuse the VMTF heuristic\n";
                 exit(1);
             }
@@ -416,26 +450,41 @@ int main(int argc, const char* argv[]) {
     for (int i = 1; i < variables.size(); ++i) {
         unassigned_vars.insert(&variables[i]);
     }
-    // There could be unit clauses in the original formula. If unit-propagation and pure literal elimination solve the whole formula, the following while-loop will not be executed.
+    // There could be unit clauses in the original formula. If unit-propagation solves the whole formula, the following while-loop will not be executed.
     unit_prop();
     
     while (variables.size()-1 != assignments.size()) {   
-        if (heu == Heuristic::vsids) {     
-            if (branchings <= 225) {
+        if (heu == Heuristic::vsids1 || heu == Heuristic::vsids2) {
+            // only resort the heap when certain number of branchings is reached
+            if (branchings <= 255) {
                 ++branchings;        
             } else {
-                for(Variable var: variables) {
-                    var.heu_pos_score = var.heu_pos_score/2 + var.vs_pos_count;
-                    var.heu_neg_score = var.heu_neg_score/2 + var.vs_neg_count;
-                    var.vs_pos_count = 0;
-                    var.vs_neg_count = 0;
-                    branchings = 0;
+                for(Variable& var: variables) {
+                    if (heu == Heuristic::vsids1) {
+                        var.vs_pos_score = var.vs_pos_score/2 + var.pos_count;
+                        var.vs_neg_score = var.vs_neg_score/2 + var.neg_count;
+                        var.pos_count = 0;
+                        var.neg_count = 0;
+                        branchings = 0;
+                    } else {
+                        var.pos_count /= 2;
+                        var.neg_count /= 2;
+                        branchings = 0;
+                    }
                 }
-                sort(unassigned_vars.heap.begin()+1, unassigned_vars.heap.end(), greater_than);
+                if (heu == Heuristic::vsids1) {
+                    for (int i = unassigned_vars.heap.size()-1; i > 0; --i) {
+                        unassigned_vars.move_down(unassigned_vars.heap[i]);
+                    }
+                }
             }
         }
 
-        if ((clauses.size()-orig_clause_num) % 100 == 0) { deletion(); }
+        // Every time another 100 clauses are learned, we try to delete clauses. 
+        if (deletion_count_down <= 0) {
+            deletion_count_down = 100;
+            deletion(); 
+        }
 
         // Always pick the variable of highest priority to branch on.
         Variable* picked_var = unassigned_vars.max();
