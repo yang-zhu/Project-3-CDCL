@@ -4,19 +4,21 @@
 
 vector<Variable> variables;
 vector<Clause*> clauses;
-int orig_clause_num = 0;  // number of clauses contained in the orginal formula
+int total_clauses = 0;  // number of clauses after preprocessing
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
-Heuristic heu = Heuristic::vmtf;
+Heuristic heuristic = Heuristic::vmtf;
 int branchings = 0;
 double max_vm_score = 0;
 int deletion_count_down = 100;
 int num_branchings = 0;
+set<set<int>> clauses_lits;
+vector<Preprocess> preprocessings = {};
 ofstream* proof_file = nullptr;
 
 bool greater_than(Variable* v1, Variable* v2) {
-    switch(heu) {
+    switch(heuristic) {
         case Heuristic::vsids1:
             return max(v1->vs_pos_score, v1->vs_neg_score) > max(v2->vs_pos_score, v2->vs_neg_score);
         case Heuristic::vsids2:
@@ -28,7 +30,7 @@ bool greater_than(Variable* v1, Variable* v2) {
 
 // Pick a polarity for a variable.
 Value pick_polarity(Variable* v) {
-    switch(heu) {
+    switch(heuristic) {
         case Heuristic::vsids1:
             return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
         case Heuristic::vsids2:
@@ -93,6 +95,22 @@ void Heap::move_down(Variable* var) {
 
 Variable* Heap::max() {
     return this->heap[1];
+}
+
+
+void log_new_clause(const set<int>& lits) {
+    for (int lit: lits) {
+        *proof_file << lit << " ";
+    }
+        *proof_file << "0\n";
+}
+
+void log_deleted_clause(const set<int>& lits) {
+    *proof_file << "d ";
+    for (int lit: lits) {
+        *proof_file << lit << " ";
+    }
+    *proof_file << "0\n";
 }
 
 Variable* lit_to_var(int lit) {
@@ -170,6 +188,15 @@ void Variable::unset() {
     unassigned_vars.insert(this);
 }
 
+bool tautology_check(set<int> lits) {
+    for (int lit: lits) {
+        if (lits.count(-lit) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 
 Clause* add_unit_clause(vector<int> lits) {
     int first = lits[0];
@@ -187,6 +214,47 @@ Clause* add_clause(const vector<int>& lits, int first, int second) {
     (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
     return cl;   
 }
+
+void equivalence_substitution(set<set<int>>& clauses_lits) {
+    bool changed = false;
+    do {
+        changed = false;
+        set<set<int>> clauses_lits_copy = clauses_lits;
+        for (const set<int>& clause_copy: clauses_lits_copy) {
+            if (clause_copy.size() == 2) {
+                int first = *clause_copy.begin();
+                int second = *(++clause_copy.begin());
+                if (clauses_lits.count({-first, -second}) > 0) {
+                    changed = true;
+                    for (auto it = clauses_lits.begin(); it != clauses_lits.end();) {
+                        if (it->count(second) > 0 || it->count(-second) > 0) {
+                            set<int> new_cl;
+                            for (int lit: *it) {
+                                if (lit == second) {
+                                    new_cl.insert(-first);
+                                } else if (lit == -second) {
+                                    new_cl.insert(first);
+                                } else {
+                                    new_cl.insert(lit);
+                                }
+                            }
+                            if (!tautology_check(new_cl)) {
+                                clauses_lits.insert(new_cl);
+                                log_new_clause(new_cl);
+                            }
+                            //log_deleted_clause(*it);
+                            it = clauses_lits.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+            }
+        }
+    } while (changed);
+}
+
+void after_preprocessing(set<set<int>>&);
 
 void fromFile(string path) {
     ifstream file = ifstream(path);
@@ -227,39 +295,49 @@ void fromFile(string path) {
             }
             
             // Only process non-tautological clauses.
-            bool tautology = false;
-            for (int lit: lits_set) {
-                if (lits_set.count(-lit) > 0) {
-                    tautology = true;
+            if (tautology_check(lits_set)) { continue; }
+
+            clauses_lits.insert(lits_set);
+
+            
+        }
+        for (Preprocess p: preprocessings) {
+            switch(p) {
+                case Preprocess::equisub:
+                    equivalence_substitution(clauses_lits);
                     break;
-                }
-            }
-            if (tautology) { continue; }
-            
-            vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
-            if (lits.size() == 1) { add_unit_clause(lits); }
-            // choose two arbitrary literals as the watched literals of the clause
-            else { add_clause(lits, lits[0], lits.back()); }
-            
-            for (int lit: lits) {
-                (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
             }
         }
+
+        after_preprocessing(clauses_lits);
+        //assert(variables.size() == num_vars+1);
+    }
+}
+
+
+void after_preprocessing(set<set<int>>& clauses) {
+    for (set<int> lits_set: clauses) {
+        vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
+        if (lits.size() == 1) { add_unit_clause(lits); }
+        // choose two arbitrary literals as the watched literals of the clause
+        else { add_clause(lits, lits[0], lits.back()); }
         
-        orig_clause_num = clauses.size();
-
-        if (heu == Heuristic::vmtf) {
-            max_vm_score = num_clauses;  // no literal's number of occurrences could exceed the number of clauses
-            for (Variable& var: variables) {
-                // VMTF initially sorts the literals according to the number of occurrences. To simulate this, we assign the number of occurences as initial score.
-                var.vm_pos_score = var.vs_pos_score;
-                var.vm_neg_score = var.vs_neg_score;
-                var.pos_count = var.vs_pos_score;
-                var.neg_count = var.vs_pos_score;
-            }
+        for (int lit: lits) {
+            (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
         }
+    }
+    
+    total_clauses = clauses.size();
 
-        assert(variables.size() == num_vars+1);
+    if (heuristic == Heuristic::vmtf) {
+        max_vm_score = total_clauses;  // no literal's number of occurrences could exceed the number of clauses
+        for (Variable& var: variables) {
+            // VMTF initially sorts the literals according to the number of occurrences. To simulate this, we assign the number of occurences as initial score.
+            var.vm_pos_score = var.vs_pos_score;
+            var.vm_neg_score = var.vs_neg_score;
+            var.pos_count = var.vs_pos_score;
+            var.neg_count = var.vs_pos_score;
+        }
     }
 }
 
@@ -329,15 +407,12 @@ void learn_clause(Clause* cl) {
 
                 // writes the learned clause into the proof file
                 if (proof_file) {
-                    for (int lit: learned_cl_lits) {
-                        *proof_file << lit << " ";
-                    }
-                    *proof_file << "0\n";
+                    log_new_clause(conflict_cl);
                 } 
 
                 // Increments the counters for the literals in the newly learned clause.
                 count_incr(learned_cl_lits); 
-                if (heu == Heuristic::vmtf) {
+                if (heuristic == Heuristic::vmtf) {
                     // Sorts the literals descendingly according to their counters.
                     sort(learned_cl_lits.begin(), learned_cl_lits.end(), [](int l1, int l2) { return get_vm_count(l1) > get_vm_count(l2); });
 
@@ -402,7 +477,7 @@ void delete_watched_occ(vector<Clause*>& watched_occ) {
 void deletion() {
     // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
     int clauses_before = clauses.size();
-    for (int i = orig_clause_num; i < clauses.size(); ++i) {
+    for (int i = total_clauses; i < clauses.size(); ++i) {
         if (clauses[i]->lits.size() > 3) {
             int count = 0;
             for (int lit: clauses[i]->lits) {
@@ -412,11 +487,7 @@ void deletion() {
                     
                     // deletes the clause in the proof file
                     if (proof_file) {
-                        *proof_file << "d ";
-                        for (int lit: clauses[i]->lits) {
-                            *proof_file << lit << " ";
-                        }
-                        *proof_file << "0\n";
+                        log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
                     }
 
                     break;
@@ -429,7 +500,7 @@ void deletion() {
         delete_watched_occ(var.pos_watched_occ);
         delete_watched_occ(var.neg_watched_occ);
     }
-    for (int i = orig_clause_num; i < clauses.size();) {
+    for (int i = total_clauses; i < clauses.size();) {
         if (clauses[i]->to_be_deleted) {
             // first frees the memory on the heap
             delete clauses[i];
@@ -450,9 +521,12 @@ int main(int argc, const char* argv[]) {
         string option = string(argv[i]);
         
         if (option[0] == '-') {
-            if (option == "-vsids1") { heu = Heuristic::vsids1; }
-            else if (option == "-vsids2") { heu = Heuristic::vsids2; }
-            else if (option == "-vmtf") { heu = Heuristic::vmtf; }
+            if (option == "-vsids1") { heuristic = Heuristic::vsids1; }
+            else if (option == "-vsids2") { heuristic = Heuristic::vsids2; }
+            else if (option == "-vmtf") { heuristic = Heuristic::vmtf; }
+            else if (option == "-equisub") { preprocessings.push_back(Preprocess::equisub); }
+            // else if (option == "-subsume") { preprocessings.push_back(Preprocess::subsume); }
+            // else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
                 ++i;
@@ -482,13 +556,13 @@ int main(int argc, const char* argv[]) {
     unit_prop();
     
     while (variables.size()-1 != assignments.size()) {   
-        if (heu == Heuristic::vsids1 || heu == Heuristic::vsids2) {
+        if (heuristic == Heuristic::vsids1 || heuristic == Heuristic::vsids2) {
             // only resort the heap when certain number of branchings is reached
             if (branchings <= 255) {
                 ++branchings;        
             } else {
                 for(Variable& var: variables) {
-                    if (heu == Heuristic::vsids1) {
+                    if (heuristic == Heuristic::vsids1) {
                         var.vs_pos_score = var.vs_pos_score/2 + var.pos_count;
                         var.vs_neg_score = var.vs_neg_score/2 + var.neg_count;
                         var.pos_count = 0;
@@ -500,7 +574,7 @@ int main(int argc, const char* argv[]) {
                         branchings = 0;
                     }
                 }
-                if (heu == Heuristic::vsids1) {
+                if (heuristic == Heuristic::vsids1) {
                     for (int i = unassigned_vars.heap.size()-1; i > 0; --i) {
                         unassigned_vars.move_down(unassigned_vars.heap[i]);
                     }

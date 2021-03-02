@@ -53,6 +53,10 @@ enum class Heuristic {
     vsids1, vsids2, vmtf
 };
 
+enum class Preprocess {
+    equisub//, subsume, niver
+};
+
 bool greater_than(Variable*, Variable*);
 
 struct Heap {  // a max-heap
