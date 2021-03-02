@@ -1,4 +1,6 @@
 #include "cdcl_solver.h"
+#include <fstream>
+#include <ostream>
 
 vector<Variable> variables;
 vector<Clause*> clauses;
@@ -10,6 +12,8 @@ Heuristic heu = Heuristic::vmtf;
 int branchings = 0;
 double max_vm_score = 0;
 int deletion_count_down = 100;
+int num_branchings = 0;
+ofstream* proof_file = nullptr;
 
 bool greater_than(Variable* v1, Variable* v2) {
     switch(heu) {
@@ -199,6 +203,7 @@ void fromFile(string path) {
     // Read the line that starts with "p" and get the number of variables as well as the number of clauses.
     if (s != "p") {
         cout << "The format of the file is wrong.\n";
+        delete proof_file;
         exit(1);
     } else {
         string cnf;
@@ -322,6 +327,14 @@ void learn_clause(Clause* cl) {
                     learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
                 }
 
+                // writes the learned clause into the proof file
+                if (proof_file) {
+                    for (int lit: learned_cl_lits) {
+                        *proof_file << lit << " ";
+                    }
+                    *proof_file << "0\n";
+                } 
+
                 // Increments the counters for the literals in the newly learned clause.
                 count_incr(learned_cl_lits); 
                 if (heu == Heuristic::vmtf) {
@@ -344,6 +357,7 @@ void learn_clause(Clause* cl) {
         --counter;
     }
     cout << "s UNSATISFIABLE\n";
+    delete proof_file;
     exit(0);
 }
 
@@ -395,6 +409,16 @@ void deletion() {
                 if (lit_to_var(lit)->value == Value::unset) { ++count; }
                 if (count == 2) {
                     clauses[i]->to_be_deleted = true;
+                    
+                    // deletes the clause in the proof file
+                    if (proof_file) {
+                        *proof_file << "d ";
+                        for (int lit: clauses[i]->lits) {
+                            *proof_file << lit << " ";
+                        }
+                        *proof_file << "0\n";
+                    }
+
                     break;
                 }
             }
@@ -429,6 +453,10 @@ int main(int argc, const char* argv[]) {
             if (option == "-vsids1") { heu = Heuristic::vsids1; }
             else if (option == "-vsids2") { heu = Heuristic::vsids2; }
             else if (option == "-vmtf") { heu = Heuristic::vmtf; }
+            else if (option == "-proof") {
+                proof_file = new ofstream(argv[i+1]);
+                ++i;
+            }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
                 cout << "-vsids1\tuse the VSIDS heuristic\n";
@@ -487,6 +515,7 @@ int main(int argc, const char* argv[]) {
         }
 
         // Always pick the variable of highest priority to branch on.
+        ++num_branchings;
         Variable* picked_var = unassigned_vars.max();
         picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
         unit_prop();
@@ -497,5 +526,7 @@ int main(int argc, const char* argv[]) {
         cout << ((variables[i].value == Value::t) ? i : -i) << " ";
     }
     cout << "0\n";
+    // cout << num_branchings;
+    delete proof_file;
     return 0;
 }
