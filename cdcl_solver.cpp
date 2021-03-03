@@ -1,4 +1,6 @@
 #include "cdcl_solver.h"
+#include <_types/_uint64_t.h>
+#include <cstdint>
 #include <fstream>
 #include <ostream>
 #include <unordered_set>
@@ -259,15 +261,20 @@ void equivalence_substitution(set<set<int>>& clauses_lits) {
 
 
 void modify_clauses(int v, set<set<int>>& new_cls, set<set<int>>& cls, unordered_map<int, unordered_set<const set<int>*>>& m) {
-    for (auto it = cls.begin(); it != cls.end();) {
-        if (it->count(v)>0 || it->count(-v)>0) {
-            for (int l: *it) {
-                m[l].erase(&*it);
-            }
-            it = cls.erase(it);
-        } else {
-            ++it;
+    if (proof_file) {
+        for (const set<int>& cl: new_cls) {
+            log_new_clause(cl);
         }
+    }
+
+    unordered_set<const set<int>*> to_delete_cls = m[v];
+    to_delete_cls.insert(m[-v].begin(), m[-v].end());
+    for (const set<int>* cl: to_delete_cls) {
+        for (int l: *cl) {
+            m[l].erase(cl);
+        }
+        log_deleted_clause(*cl);
+        cls.erase(*cl);
     }
     for (const set<int>& cl: new_cls) {
         auto it = cls.insert(cl).first;
@@ -294,15 +301,15 @@ void niver(set<set<int>>& clauses) {
         changed = false;
         for (int v: vars) {
             set<set<int>> new_clauses = {};
-            int occurences = lit_to_cl[v].size() + lit_to_cl[-v].size();
-            if (occurences == 0) { continue; }
+            int occurrences = lit_to_cl[v].size() + lit_to_cl[-v].size();
+            if (occurrences == 0) { continue; }
             for (const set<int>* cl1: lit_to_cl[v]) {
                 for (const set<int>* cl2: lit_to_cl[-v]) {
                     set<int> new_cl = resolution(*cl1, *cl2, v);
                     if (!tautology_check(new_cl)) {
                         new_clauses.insert(move(new_cl));
                     }
-                    if (new_clauses.size() >= occurences) {
+                    if (new_clauses.size() > occurrences) {
                         goto done;
                     }
                 }
@@ -314,6 +321,47 @@ void niver(set<set<int>>& clauses) {
             done:;         
         }
     } while(changed);
+}
+
+uint64_t signature(const set<int>& cl) {
+    uint64_t cl_bits = 0;
+    for (int l: cl) {
+        l = abs(l) % 64;
+        uint64_t l_bits = uint64_t{1} << l;
+        cl_bits |= l_bits;
+    }
+    return cl_bits;
+}
+
+bool subsumes(const set<int>& cl1, const set<int>& cl2, unordered_map<const set<int>*, uint64_t>& m) {
+    if ((m[&cl1] & ~m[&cl2]) != 0) {
+        return false;
+    } else {
+        for (int l: cl1) {
+            if (cl2.count(l) == 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void eliminate_subsumed_clauses(set<set<int>>& clauses) {
+    unordered_map <const set<int>*, uint64_t> cl_sig = {};
+    for (const set<int>& cl: clauses) {
+        cl_sig[&cl] = signature(cl);
+    }
+
+    for (const set<int>& cl: clauses) {
+        for (auto it = clauses.begin(); it != clauses.end();) {
+            if (&cl != &*it && subsumes(cl, *it, cl_sig)) {
+                log_deleted_clause(*it);
+                it = clauses.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 }
 
 void after_preprocessing(set<set<int>>&);
@@ -367,6 +415,9 @@ void fromFile(string path) {
             switch(p) {
                 case Preprocess::equisub:
                     equivalence_substitution(clauses_lits);
+                    break;
+                case Preprocess::subsume:
+                    eliminate_subsumed_clauses(clauses_lits);
                     break;
                 case Preprocess::niver:
                     niver(clauses_lits);
@@ -598,7 +649,7 @@ int main(int argc, const char* argv[]) {
             else if (option == "-vsids2") { heuristic = Heuristic::vsids2; }
             else if (option == "-vmtf") { heuristic = Heuristic::vmtf; }
             else if (option == "-equisub") { preprocessings.push_back(Preprocess::equisub); }
-            // else if (option == "-subsume") { preprocessings.push_back(Preprocess::subsume); }
+            else if (option == "-subsume") { preprocessings.push_back(Preprocess::subsume); }
             else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
