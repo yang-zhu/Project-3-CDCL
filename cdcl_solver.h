@@ -54,7 +54,7 @@ enum class Heuristic {
 };
 
 enum class Preprocess {
-    equisub//, subsume, niver
+    equisub, niver//, subsume
 };
 
 bool greater_than(Variable*, Variable*);

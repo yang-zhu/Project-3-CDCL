@@ -1,6 +1,8 @@
 #include "cdcl_solver.h"
 #include <fstream>
 #include <ostream>
+#include <unordered_set>
+#include <unordered_map>
 
 vector<Variable> variables;
 vector<Clause*> clauses;
@@ -13,7 +15,6 @@ int branchings = 0;
 double max_vm_score = 0;
 int deletion_count_down = 100;
 int num_branchings = 0;
-set<set<int>> clauses_lits;
 vector<Preprocess> preprocessings = {};
 ofstream* proof_file = nullptr;
 
@@ -99,18 +100,27 @@ Variable* Heap::max() {
 
 
 void log_new_clause(const set<int>& lits) {
-    for (int lit: lits) {
-        *proof_file << lit << " ";
+    if (proof_file) {
+        for (int lit: lits) {
+            *proof_file << lit << " ";
+        }
+            *proof_file << "0\n";
     }
-        *proof_file << "0\n";
 }
 
 void log_deleted_clause(const set<int>& lits) {
-    *proof_file << "d ";
-    for (int lit: lits) {
-        *proof_file << lit << " ";
+    if (proof_file) {
+        *proof_file << "d ";
+        for (int lit: lits) {
+            *proof_file << lit << " ";
+        }
+        *proof_file << "0\n";
     }
-    *proof_file << "0\n";
+}
+
+template<class T>
+set<T> vec_to_set(const vector<T>& vec) {
+    return set<T>(vec.begin(), vec.end());
 }
 
 Variable* lit_to_var(int lit) {
@@ -197,26 +207,19 @@ bool tautology_check(set<int> lits) {
     return false;
 }
 
-
-Clause* add_unit_clause(vector<int> lits) {
-    int first = lits[0];
-    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
-    Clause* cl = clauses.back();
-    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
-    unit_clauses.push_back(cl);
-    return cl;
-}
-
-Clause* add_clause(const vector<int>& lits, int first, int second) {
-    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(second)});
-    Clause* cl = clauses.back();
-    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
-    (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
-    return cl;   
+set<int> resolution(const set<int>& cl1, set<int> cl2, int var) {
+    for (int lit: cl1) {
+        if (abs(lit) == var) {
+            cl2.erase(-lit);
+            continue;
+        }
+        cl2.insert(lit);  // lits as a set will eliminate all the duplicate literals (the two clauses could have several shared literals)
+    }
+    return cl2;
 }
 
 void equivalence_substitution(set<set<int>>& clauses_lits) {
-    bool changed = false;
+    bool changed;
     do {
         changed = false;
         set<set<int>> clauses_lits_copy = clauses_lits;
@@ -254,6 +257,65 @@ void equivalence_substitution(set<set<int>>& clauses_lits) {
     } while (changed);
 }
 
+
+void modify_clauses(int v, set<set<int>>& new_cls, set<set<int>>& cls, unordered_map<int, unordered_set<const set<int>*>>& m) {
+    for (auto it = cls.begin(); it != cls.end();) {
+        if (it->count(v)>0 || it->count(-v)>0) {
+            for (int l: *it) {
+                m[l].erase(&*it);
+            }
+            it = cls.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const set<int>& cl: new_cls) {
+        auto it = cls.insert(cl).first;
+        for (int l: cl) {
+            m[l].insert(&*it);
+        }
+    }
+}
+
+void niver(set<set<int>>& clauses) {
+    unordered_map<int, unordered_set<const set<int>*>> lit_to_cl;
+    for (const set<int>& cl: clauses) {
+        for (int l: cl) {
+            lit_to_cl[l].insert(&cl);
+        }
+    }
+    set<int> vars = {};
+    for (const pair<int, unordered_set<const set<int>*>>& p: lit_to_cl) {
+        vars.insert(abs(p.first));
+    }
+
+    bool changed;
+    do {
+        changed = false;
+        for (int v: vars) {
+            set<set<int>> new_clauses = {};
+            int occurences = lit_to_cl[v].size() + lit_to_cl[-v].size();
+            if (occurences == 0) { continue; }
+            for (const set<int>* cl1: lit_to_cl[v]) {
+                for (const set<int>* cl2: lit_to_cl[-v]) {
+                    set<int> new_cl = resolution(*cl1, *cl2, v);
+                    if (!tautology_check(new_cl)) {
+                        new_clauses.insert(move(new_cl));
+                    }
+                    if (new_clauses.size() >= occurences) {
+                        goto done;
+                    }
+                }
+            }
+            modify_clauses(v, new_clauses, clauses, lit_to_cl);
+            //cout << "eliminated " << v << "\n";
+            changed = true;
+            
+            done:;         
+        }
+    } while(changed);
+}
+
 void after_preprocessing(set<set<int>>&);
 
 void fromFile(string path) {
@@ -285,6 +347,7 @@ void fromFile(string path) {
             variables.push_back(Variable());
         }
 
+        set<set<int>> clauses_lits;
         for (int i = 0; i < num_clauses; ++i) {
             set<int> lits_set;  // removes duplicate literals; for detecting tautological clause
             int lit;
@@ -297,14 +360,16 @@ void fromFile(string path) {
             // Only process non-tautological clauses.
             if (tautology_check(lits_set)) { continue; }
 
-            clauses_lits.insert(lits_set);
-
-            
+            clauses_lits.insert(lits_set);          
         }
+
         for (Preprocess p: preprocessings) {
             switch(p) {
                 case Preprocess::equisub:
                     equivalence_substitution(clauses_lits);
+                    break;
+                case Preprocess::niver:
+                    niver(clauses_lits);
                     break;
             }
         }
@@ -314,16 +379,38 @@ void fromFile(string path) {
     }
 }
 
+Clause* add_unit_clause(vector<int> lits) {
+    int first = lits[0];
+    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
+    Clause* cl = clauses.back();
+    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
+    unit_clauses.push_back(cl);
+    return cl;
+}
+
+Clause* add_clause(const vector<int>& lits, int first, int second) {
+    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(second)});
+    Clause* cl = clauses.back();
+    (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
+    (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
+    return cl;   
+}
 
 void after_preprocessing(set<set<int>>& clauses) {
     for (set<int> lits_set: clauses) {
-        vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
-        if (lits.size() == 1) { add_unit_clause(lits); }
-        // choose two arbitrary literals as the watched literals of the clause
-        else { add_clause(lits, lits[0], lits.back()); }
-        
-        for (int lit: lits) {
-            (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
+        if (!lits_set.empty()) {
+            vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
+            if (lits.size() == 1) { add_unit_clause(lits); }
+            // choose two arbitrary literals as the watched literals of the clause
+            else { add_clause(lits, lits[0], lits.back()); }
+            
+            for (int lit: lits) {
+                (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
+            }
+        } else {
+            cout << "s UNSATISFIABLE\n";
+            delete proof_file;
+            exit(0);
         }
     }
     
@@ -342,16 +429,6 @@ void after_preprocessing(set<set<int>>& clauses) {
 }
 
 
-void resolution(Clause* cl, set<int>& lits, Variable* var) {
-    for (int lit: cl->lits) {
-        if (lit_to_var(lit) == var) {
-            lits.erase(-lit);
-            continue;
-        }
-        lits.insert(lit);  // lits as a set will eliminate all the duplicate literals (the two clauses could have several shared literals)
-    }
-}
-
 void count_incr(const vector<int>& lits) {
     for (int lit: lits) {
         (lit > 0 ? lit_to_var(lit)->pos_count : lit_to_var(lit)->neg_count) += 1;
@@ -365,7 +442,7 @@ double get_vm_count(int lit) {
 // Derives an asserting conflict clause
 void learn_clause(Clause* cl) {
     int counter = assignments.size()-1;
-    set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
+    set<int> conflict_cl = vec_to_set(cl->lits);
     while (counter >= 0) {
         Variable* var = assignments[counter];
         if (var->bd == 0) {
@@ -374,7 +451,7 @@ void learn_clause(Clause* cl) {
         // Only clauses that contribute to the conflict will be taken into account.
         if (conflict_cl.count(-var->var_to_lit()) == 1) {  // the literal has to be false under the current assignment
             int max_bd = var->bd;
-            resolution(var->reason, conflict_cl, var);
+            conflict_cl = resolution(vec_to_set(var->reason->lits), move(conflict_cl), var->id());
             int with_max_bd = 0;
             int assertion_level = 0;
             for (int lit: conflict_cl) {
@@ -406,9 +483,7 @@ void learn_clause(Clause* cl) {
                 }
 
                 // writes the learned clause into the proof file
-                if (proof_file) {
-                    log_new_clause(conflict_cl);
-                } 
+                log_new_clause(conflict_cl); 
 
                 // Increments the counters for the literals in the newly learned clause.
                 count_incr(learned_cl_lits); 
@@ -478,17 +553,15 @@ void deletion() {
     // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
     int clauses_before = clauses.size();
     for (int i = total_clauses; i < clauses.size(); ++i) {
-        if (clauses[i]->lits.size() > 3) {
+        if (clauses[i]->lits.size() > 4) {
             int count = 0;
             for (int lit: clauses[i]->lits) {
                 if (lit_to_var(lit)->value == Value::unset) { ++count; }
-                if (count == 2) {
+                if (count > 4) {
                     clauses[i]->to_be_deleted = true;
                     
                     // deletes the clause in the proof file
-                    if (proof_file) {
-                        log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
-                    }
+                    log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
 
                     break;
                 }
@@ -526,7 +599,7 @@ int main(int argc, const char* argv[]) {
             else if (option == "-vmtf") { heuristic = Heuristic::vmtf; }
             else if (option == "-equisub") { preprocessings.push_back(Preprocess::equisub); }
             // else if (option == "-subsume") { preprocessings.push_back(Preprocess::subsume); }
-            // else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
+            else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
                 ++i;
