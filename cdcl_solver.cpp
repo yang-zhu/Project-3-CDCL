@@ -17,6 +17,9 @@ int branchings = 0;
 double max_vm_score = 0;
 int deletion_count_down = 100;
 int num_branchings = 0;
+int restart_interval = 100;
+int restart_count_down = 100;
+bool phase_saving = true;
 vector<Preprocess> preprocessings = {};
 ofstream* proof_file = nullptr;
 
@@ -33,13 +36,17 @@ bool greater_than(Variable* v1, Variable* v2) {
 
 // Pick a polarity for a variable.
 Value pick_polarity(Variable* v) {
-    switch(heuristic) {
-        case Heuristic::vsids1:
-            return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
-        case Heuristic::vsids2:
-            return (v->pos_count > v->neg_count) ? Value::t : Value::f;
-        case Heuristic::vmtf:
-            return (v->vm_pos_score > v->vm_neg_score) ? Value::t : Value::f;
+    if (phase_saving && v->old_value != Value::unset) {
+        return v->old_value;
+    } else {
+        switch(heuristic) {
+            case Heuristic::vsids1:
+                return (v->vs_pos_score > v->vs_neg_score) ? Value::t : Value::f;
+            case Heuristic::vsids2:
+                return (v->pos_count > v->neg_count) ? Value::t : Value::f;
+            case Heuristic::vmtf:
+                return (v->vm_pos_score > v->vm_neg_score) ? Value::t : Value::f;
+        }
     }
 }
 
@@ -164,6 +171,7 @@ void Variable::set(Value value, int bd) {
         
         if (cl->watched1->value != Value::unset && cl->watched2->value != Value::unset) {
             // when all literals in the clause are set to false -> conflict arises
+            --restart_count_down;
             learn_clause(cl);
             return;
         } else {
@@ -194,6 +202,7 @@ void Variable::set(Value value, int bd) {
 }
 
 void Variable::unset() {
+    old_value = value;
     value = Value::unset;
     bd = -1;
     reason = nullptr;
@@ -594,7 +603,8 @@ void learn_clause(Clause* cl) {
                     }
                     max_vm_score = max_vm_score + num_moved_vars;
                 }
-                backtrack(assertion_level, learned_cl);
+                backtrack(assertion_level);
+                unit_clauses.push_back(learned_cl);
                 return;
             }
         }
@@ -606,13 +616,12 @@ void learn_clause(Clause* cl) {
 }
 
 // Backtracking
-void backtrack(int depth, Clause* learned_cl) {
+void backtrack(int depth) {
     unit_clauses.clear();
     while(!assignments.empty() && assignments.back()->bd > depth) {
         assignments.back()->unset();
         assignments.pop_back();
     }
-    unit_clauses.push_back(learned_cl);
     --deletion_count_down;
 }
 
@@ -747,6 +756,12 @@ int main(int argc, const char* argv[]) {
                     }
                 }
             }
+        }
+
+        if (restart_count_down <= 0) {
+            backtrack(0);
+            restart_count_down = restart_interval;
+            restart_interval = static_cast<int>(restart_interval * 1.5);
         }
 
         // Every time another 100 clauses are learned, we try to delete clauses. 
