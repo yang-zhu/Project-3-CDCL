@@ -351,12 +351,33 @@ void eliminate_subsumed_clauses(set<set<int>>& clauses) {
     for (const set<int>& cl: clauses) {
         cl_sig[&cl] = signature(cl);
     }
-
+    unordered_map<int, unordered_set<const set<int>*>> lit_to_cl;
     for (const set<int>& cl: clauses) {
-        for (auto it = clauses.begin(); it != clauses.end();) {
-            if (&cl != &*it && subsumes(cl, *it, cl_sig)) {
-                log_deleted_clause(*it);
-                it = clauses.erase(it);
+        for (int l: cl) {
+            lit_to_cl[l].insert(&cl);
+        }
+    }
+
+    for (const set<int>& cl1: clauses) {
+        int min_size = numeric_limits<int>::max();
+        int min_lit = 0;
+        for (int l: cl1) {
+            if (lit_to_cl[l].size() < min_size) {
+                min_size = lit_to_cl[l].size();
+                min_lit = l;
+            }
+        }
+        unordered_set<const set<int>*>& candidates = lit_to_cl[min_lit];
+        for (auto it = candidates.begin(); it != candidates.end();) {
+            if (&cl1 != *it && subsumes(cl1, **it, cl_sig)) {
+                for (int l: **it) {
+                    if (l != min_lit) {
+                        lit_to_cl[l].erase(*it);
+                    }
+                }
+                log_deleted_clause(**it);
+                clauses.erase(**it);
+                it = candidates.erase(it);
             } else {
                 ++it;
             }
