@@ -501,6 +501,27 @@ void after_preprocessing(set<set<int>>& clauses) {
 }
 
 
+void minimize_clause(set<int>& cl) {
+    for (auto it = cl.begin(); it != cl.end();) {
+        bool remove = true;
+        if (lit_to_var(*it)->reason) {
+            for (int l: lit_to_var(*it)->reason->lits) {
+                if (l != -*it && cl.count(l) == 0) { 
+                    remove = false;
+                    break;
+                }
+            }
+        } else {
+            remove = false;
+        }
+        if (remove) {
+            it = cl.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void count_incr(const vector<int>& lits) {
     for (int lit: lits) {
         (lit > 0 ? lit_to_var(lit)->pos_count : lit_to_var(lit)->neg_count) += 1;
@@ -537,6 +558,7 @@ void learn_clause(Clause* cl) {
             }
             
             if (with_max_bd == 1) {
+                minimize_clause(conflict_cl);
                 vector<int> learned_cl_lits = vector<int>(conflict_cl.begin(), conflict_cl.end());
                 Clause* learned_cl;
                 if (learned_cl_lits.size() == 1) {
@@ -625,7 +647,7 @@ void deletion() {
     // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
     int clauses_before = clauses.size();
     for (int i = total_clauses; i < clauses.size(); ++i) {
-        if (clauses[i]->lits.size() > 4) {
+        if (clauses[i]->lits.size() > 5) {
             int count = 0;
             for (int lit: clauses[i]->lits) {
                 if (lit_to_var(lit)->value == Value::unset) { ++count; }
