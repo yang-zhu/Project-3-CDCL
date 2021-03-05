@@ -32,6 +32,7 @@ enum class Value {
 struct Variable {
     int bd = -1;
     Value value = Value::unset;
+    Value old_value = Value::unset;
     vector<Clause*> pos_watched_occ;
     vector<Clause*> neg_watched_occ;
     Clause* reason = nullptr;
@@ -54,7 +55,7 @@ enum class Heuristic {
 };
 
 enum class Preprocess {
-    equisub//, subsume, niver
+    equisub, subsume, niver
 };
 
 bool greater_than(Variable*, Variable*);
@@ -81,7 +82,7 @@ struct Heap {  // a max-heap
 
 void learn_clause(Clause*);
 
-void backtrack(int, Clause*);
+void backtrack(int);
 
 void unit_prop();
 
