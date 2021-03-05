@@ -15,7 +15,8 @@ Heap unassigned_vars;
 Heuristic heuristic = Heuristic::vmtf;
 int branchings = 0;
 double max_vm_score = 0;
-int deletion_count_down = 100;
+// int deletion_count_down = 100;
+int kept_clauses = 500;
 int num_branchings = 0;
 int restart_interval = 100;
 int restart_count_down = 100;
@@ -623,7 +624,7 @@ void backtrack(int depth) {
         assignments.back()->unset();
         assignments.pop_back();
     }
-    --deletion_count_down;
+    // --deletion_count_down;
 }
 
 // Unit propagation
@@ -649,29 +650,50 @@ void unit_prop() {
 }
 
 
+int clause_score (Clause* cl) {
+    int score = 0;
+    for (int l: cl->lits) {
+        if (lit_to_var(l)->value == Value::unset) { ++score; }
+    }
+    return score == 0 ? 0 : 5*score+cl->lits.size();
+}
+
 void delete_watched_occ(vector<Clause*>& watched_occ) {
     watched_occ.erase(remove_if(watched_occ.begin(), watched_occ.end(), [](Clause* cl) { return cl->to_be_deleted; }), watched_occ.end());
 }
 
-void deletion() {
+void deletion(int budget) {
     // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
-    int clauses_before = clauses.size();
+    vector<pair<Clause*,int>> cl_to_score = {};
     for (int i = total_clauses; i < clauses.size(); ++i) {
-        if (clauses[i]->lits.size() > 5) {
-            int count = 0;
-            for (int lit: clauses[i]->lits) {
-                if (lit_to_var(lit)->value == Value::unset) { ++count; }
-                if (count > 4) {
-                    clauses[i]->to_be_deleted = true;
-                    
-                    // deletes the clause in the proof file
-                    log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
-
-                    break;
-                }
-            }
-        }
+        cl_to_score.push_back(make_pair(clauses[i], clause_score(clauses[i])));
     }
+    sort(cl_to_score.begin(), cl_to_score.end(), [](pair<Clause*,int> p1, pair<Clause*,int> p2) { return p1.second < p2.second; });
+
+    for (int i = budget; i < cl_to_score.size(); ++i) {
+        pair<Clause*,int> p = cl_to_score[i];
+        if (p.second == 0) { continue; }
+        p.first->to_be_deleted = true;
+        // deletes the clause in the proof file
+        log_deleted_clause(vec_to_set(p.first->lits));
+    }
+    
+    // for (int i = total_clauses; i < clauses.size(); ++i) {
+    //     if (clauses[i]->lits.size() > 5) {
+    //         int count = 0;
+    //         for (int lit: clauses[i]->lits) {
+    //             if (lit_to_var(lit)->value == Value::unset) { ++count; }
+    //             if (count > 4) {
+    //                 clauses[i]->to_be_deleted = true;
+                    
+    //                 // deletes the clause in the proof file
+    //                 log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
+
+    //                 break;
+    //             }
+    //         }
+    //     }
+    // }
     for (Variable& var: variables) {
         // Removes the to-be-deleted learned clauses from the watched occurrences vector of every variable.
         delete_watched_occ(var.pos_watched_occ);
@@ -688,6 +710,7 @@ void deletion() {
             ++i;
         }
     }
+    std::cout << "deleted " << (cl_to_score.size() - (clauses.size() - total_clauses)) << " of " << cl_to_score.size()  << " clauses\n";
 }
 
 
@@ -760,15 +783,20 @@ int main(int argc, const char* argv[]) {
         }
 
         if (restart_count_down <= 0) {
+            int branching_vars = 0;
+            for (Variable* v : assignments) {
+                if (v->reason == nullptr) branching_vars++;
+            }
+            cout << "restart, " << branching_vars << " branching vars\n";
             backtrack(0);
             restart_count_down = restart_interval;
             restart_interval = static_cast<int>(restart_interval * 1.5);
         }
 
         // Every time another 100 clauses are learned, we try to delete clauses. 
-        if (deletion_count_down <= 0) {
-            deletion_count_down = 100;
-            deletion(); 
+        if (clauses.size()-total_clauses >= 2 * kept_clauses) {
+            deletion(kept_clauses);
+            kept_clauses *= 1.1;
         }
 
         // Always pick the variable of highest priority to branch on.
