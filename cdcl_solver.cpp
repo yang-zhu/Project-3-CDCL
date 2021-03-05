@@ -309,25 +309,26 @@ void niver(set<set<int>>& clauses) {
     do {
         changed = false;
         for (int v: vars) {
-            set<set<int>> new_clauses = {};
-            int occurrences = lit_to_cl[v].size() + lit_to_cl[-v].size();
-            if (occurrences == 0) { continue; }
-            for (const set<int>* cl1: lit_to_cl[v]) {
-                for (const set<int>* cl2: lit_to_cl[-v]) {
-                    set<int> new_cl = resolution(*cl1, *cl2, v);
-                    if (!tautology_check(new_cl)) {
-                        new_clauses.insert(move(new_cl));
-                    }
-                    if (new_clauses.size() > occurrences) {
-                        goto done;
+            if (min(lit_to_cl[v].size(), lit_to_cl[-v].size()) <= 10) {
+                set<set<int>> new_clauses = {};
+                int occurrences = lit_to_cl[v].size() + lit_to_cl[-v].size();
+                if (occurrences == 0) { continue; }
+                for (const set<int>* cl1: lit_to_cl[v]) {
+                    for (const set<int>* cl2: lit_to_cl[-v]) {
+                        set<int> new_cl = resolution(*cl1, *cl2, v);
+                        if (!tautology_check(new_cl)) {
+                            new_clauses.insert(move(new_cl));
+                        }
+                        if (new_clauses.size() > occurrences) {
+                            goto done;
+                        }
                     }
                 }
+                modify_clauses(v, new_clauses, clauses, lit_to_cl);
+                //cout << "eliminated " << v << "\n";
+                changed = true;
             }
-            modify_clauses(v, new_clauses, clauses, lit_to_cl);
-            //cout << "eliminated " << v << "\n";
-            changed = true;
-            
-            done:;         
+            done:;
         }
     } while(changed);
 }
