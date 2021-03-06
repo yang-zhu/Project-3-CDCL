@@ -1,27 +1,34 @@
 #include "cdcl_solver.h"
 #include <_types/_uint64_t.h>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <ostream>
 #include <unordered_set>
 #include <unordered_map>
 
 vector<Variable> variables;
-vector<Clause*> clauses;
-int total_clauses = 0;  // number of clauses after preprocessing
+vector<Clause*> orig_clauses;
+vector<Clause*> learned_clauses;
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 Heuristic heuristic = Heuristic::vmtf;
 int branchings = 0;
 double max_vm_score = 0;
-// int deletion_count_down = 100;
+
+int deletion_count_down = 100;
 int kept_clauses = 500;
+double kept_clauses_growth = 1.1;
+int kept_clause_width = 5;
+int kept_clause_unset_lits = 4;
+int unset_lits_weight = 5;
+
 int num_branchings = 0;
 int restart_interval = 100;
 int restart_count_down = 100;
 bool phase_saving = true;
-vector<Preprocess> preprocessings = {};
+vector<Preprocess> preprocessings;
 ofstream* proof_file = nullptr;
 
 bool greater_than(Variable* v1, Variable* v2) {
@@ -118,7 +125,8 @@ void log_new_clause(const set<int>& lits) {
     }
 }
 
-void log_deleted_clause(const set<int>& lits) {
+template<class T>
+void log_deleted_clause(const T& lits) {
     if (proof_file) {
         *proof_file << "d ";
         for (int lit: lits) {
@@ -126,11 +134,6 @@ void log_deleted_clause(const set<int>& lits) {
         }
         *proof_file << "0\n";
     }
-}
-
-template<class T>
-set<T> vec_to_set(const vector<T>& vec) {
-    return set<T>(vec.begin(), vec.end());
 }
 
 Variable* lit_to_var(int lit) {
@@ -219,7 +222,8 @@ bool tautology_check(set<int> lits) {
     return false;
 }
 
-set<int> resolution(const set<int>& cl1, set<int> cl2, int var) {
+template <class T>
+set<int> resolution(const T& cl1, set<int> cl2, int var) {
     for (int lit: cl1) {
         if (abs(lit) == var) {
             cl2.erase(-lit);
@@ -228,6 +232,12 @@ set<int> resolution(const set<int>& cl1, set<int> cl2, int var) {
         cl2.insert(lit);  // lits as a set will eliminate all the duplicate literals (the two clauses could have several shared literals)
     }
     return cl2;
+}
+
+void exit_unsatisfiable() {
+    cout << "s UNSATISFIABLE\n";
+    delete proof_file;
+    exit(0);
 }
 
 void equivalence_substitution(set<set<int>>& clauses_lits) {
@@ -515,7 +525,7 @@ void fromFile(string path) {
     }
 }
 
-Clause* add_unit_clause(vector<int> lits) {
+Clause* add_unit_clause(const vector<int>& lits, vector<Clause*>& clauses) {
     int first = lits[0];
     clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
     Clause* cl = clauses.back();
@@ -524,7 +534,7 @@ Clause* add_unit_clause(vector<int> lits) {
     return cl;
 }
 
-Clause* add_clause(const vector<int>& lits, int first, int second) {
+Clause* add_clause(const vector<int>& lits, vector<Clause*>& clauses, int first, int second) {
     clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(second)});
     Clause* cl = clauses.back();
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
@@ -536,24 +546,20 @@ void after_preprocessing(set<set<int>>& clauses) {
     for (set<int> lits_set: clauses) {
         if (!lits_set.empty()) {
             vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
-            if (lits.size() == 1) { add_unit_clause(lits); }
+            if (lits.size() == 1) { add_unit_clause(lits, orig_clauses); }
             // choose two arbitrary literals as the watched literals of the clause
-            else { add_clause(lits, lits[0], lits.back()); }
+            else { add_clause(lits, orig_clauses, lits[0], lits.back()); }
             
             for (int lit: lits) {
                 (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
             }
         } else {
-            cout << "s UNSATISFIABLE\n";
-            delete proof_file;
-            exit(0);
+            exit_unsatisfiable();
         }
     }
-    
-    total_clauses = clauses.size();
 
     if (heuristic == Heuristic::vmtf) {
-        max_vm_score = total_clauses;  // no literal's number of occurrences could exceed the number of clauses
+        max_vm_score = orig_clauses.size();  // no literal's number of occurrences could exceed the number of clauses
         for (Variable& var: variables) {
             // VMTF initially sorts the literals according to the number of occurrences. To simulate this, we assign the number of occurences as initial score.
             var.vm_pos_score = var.vs_pos_score;
@@ -599,7 +605,7 @@ double get_vm_count(int lit) {
 // Derives an asserting conflict clause
 void learn_clause(Clause* cl) {
     int counter = assignments.size()-1;
-    set<int> conflict_cl = vec_to_set(cl->lits);
+    set<int> conflict_cl = set<int>(cl->lits.begin(), cl->lits.end());
     while (counter >= 0) {
         Variable* var = assignments[counter];
         if (var->bd == 0) {
@@ -608,7 +614,7 @@ void learn_clause(Clause* cl) {
         // Only clauses that contribute to the conflict will be taken into account.
         if (conflict_cl.count(-var->var_to_lit()) == 1) {  // the literal has to be false under the current assignment
             int max_bd = var->bd;
-            conflict_cl = resolution(vec_to_set(var->reason->lits), move(conflict_cl), var->id());
+            conflict_cl = resolution(var->reason->lits, move(conflict_cl), var->id());
             int with_max_bd = 0;
             int assertion_level = 0;
             for (int lit: conflict_cl) {
@@ -626,7 +632,7 @@ void learn_clause(Clause* cl) {
                 vector<int> learned_cl_lits = vector<int>(conflict_cl.begin(), conflict_cl.end());
                 Clause* learned_cl;
                 if (learned_cl_lits.size() == 1) {
-                    learned_cl = add_unit_clause(learned_cl_lits);
+                    learned_cl = add_unit_clause(learned_cl_lits, learned_clauses);
                 } else {
                     vector<Variable*> watched;
                     // The two watched literals in the new asserting conflict clause are the shallowest in the assignment stack. This way we make sure that they are the first to be unset in backtracking.
@@ -637,14 +643,14 @@ void learn_clause(Clause* cl) {
                         }
                         --counter;
                     }
-                    learned_cl = add_clause(learned_cl_lits, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
+                    learned_cl = add_clause(learned_cl_lits, learned_clauses, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
                 }
 
                 // writes the learned clause into the proof file
                 log_new_clause(conflict_cl); 
 
                 // Increments the counters for the literals in the newly learned clause.
-                count_incr(learned_cl_lits); 
+                count_incr(learned_cl_lits);
                 if (heuristic == Heuristic::vmtf) {
                     // Sorts the literals descendingly according to their counters.
                     sort(learned_cl_lits.begin(), learned_cl_lits.end(), [](int l1, int l2) { return get_vm_count(l1) > get_vm_count(l2); });
@@ -665,9 +671,7 @@ void learn_clause(Clause* cl) {
         }
         --counter;
     }
-    cout << "s UNSATISFIABLE\n";
-    delete proof_file;
-    exit(0);
+    exit_unsatisfiable();
 }
 
 // Backtracking
@@ -677,7 +681,7 @@ void backtrack(int depth) {
         assignments.back()->unset();
         assignments.pop_back();
     }
-    // --deletion_count_down;
+    --deletion_count_down;
 }
 
 // Unit propagation
@@ -704,22 +708,24 @@ void unit_prop() {
 
 
 int clause_score (Clause* cl) {
-    int score = 0;
+    int unset_lits = 0;
     for (int l: cl->lits) {
-        if (lit_to_var(l)->value == Value::unset) { ++score; }
+        if (lit_to_var(l)->value == Value::unset) { ++unset_lits; }
     }
-    return score == 0 ? 0 : 5*score+cl->lits.size();
+    if (unset_lits <= kept_clause_unset_lits && cl->lits.size() <= kept_clause_width) {
+       return 0;
+    }
+    return unset_lits == 0 ? 0 : 5*unset_lits+cl->lits.size();
 }
 
 void delete_watched_occ(vector<Clause*>& watched_occ) {
     watched_occ.erase(remove_if(watched_occ.begin(), watched_occ.end(), [](Clause* cl) { return cl->to_be_deleted; }), watched_occ.end());
 }
 
-void deletion(int budget) {
-    // Deletes learned clauses that are more than 5 literals wide and contain more than two literals unassigned.
+void deletion(int budget) {   
     vector<pair<Clause*,int>> cl_to_score = {};
-    for (int i = total_clauses; i < clauses.size(); ++i) {
-        cl_to_score.push_back(make_pair(clauses[i], clause_score(clauses[i])));
+    for (Clause* cl: learned_clauses) {
+        cl_to_score.push_back(make_pair(cl, clause_score(cl)));
     }
     sort(cl_to_score.begin(), cl_to_score.end(), [](pair<Clause*,int> p1, pair<Clause*,int> p2) { return p1.second < p2.second; });
 
@@ -728,37 +734,21 @@ void deletion(int budget) {
         if (p.second == 0) { continue; }
         p.first->to_be_deleted = true;
         // deletes the clause in the proof file
-        log_deleted_clause(vec_to_set(p.first->lits));
+        log_deleted_clause(p.first->lits);
     }
     
-    // for (int i = total_clauses; i < clauses.size(); ++i) {
-    //     if (clauses[i]->lits.size() > 5) {
-    //         int count = 0;
-    //         for (int lit: clauses[i]->lits) {
-    //             if (lit_to_var(lit)->value == Value::unset) { ++count; }
-    //             if (count > 4) {
-    //                 clauses[i]->to_be_deleted = true;
-                    
-    //                 // deletes the clause in the proof file
-    //                 log_deleted_clause(set<int>(clauses[i]->lits.begin(), clauses[i]->lits.end()));
-
-    //                 break;
-    //             }
-    //         }
-    //     }
-    // }
     for (Variable& var: variables) {
         // Removes the to-be-deleted learned clauses from the watched occurrences vector of every variable.
         delete_watched_occ(var.pos_watched_occ);
         delete_watched_occ(var.neg_watched_occ);
     }
-    for (int i = total_clauses; i < clauses.size();) {
-        if (clauses[i]->to_be_deleted) {
+    for (int i = 0; i < learned_clauses.size();) {
+        if (learned_clauses[i]->to_be_deleted) {
             // first frees the memory on the heap
-            delete clauses[i];
+            delete learned_clauses[i];
             // then deletes the pointer from the clauses vector
-            swap(clauses[i], clauses.back());
-            clauses.pop_back();
+            swap(learned_clauses[i], learned_clauses.back());
+            learned_clauses.pop_back();
         } else {
             ++i;
         }
@@ -781,6 +771,26 @@ int main(int argc, const char* argv[]) {
             else if (option == "-subsume") { preprocessings.push_back(Preprocess::subs); }
             else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
             else if (option == "-selfsubs") { preprocessings.push_back(Preprocess::selfsubs); }
+            else if (option == "-kept_clauses") {
+                kept_clauses = stoi(argv[i+1]);
+                ++i;
+            }
+            else if (option == "-kept_clauses_growth") {
+                kept_clauses_growth = stoi(argv[i+1]);
+                ++i;
+            }
+            else if (option == "-kept_clause_width") {
+                kept_clause_width = stoi(argv[i+1]);
+                ++i;
+            }
+            else if (option == "-kept_clause_unset_lits") {
+                kept_clause_unset_lits = stoi(argv[i+1]);
+                ++i;
+            }
+            else if (option == "-unset_lits_weight") {
+                unset_lits_weight = stoi(argv[i+1]);
+                ++i;
+            }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
                 ++i;
@@ -844,13 +854,14 @@ int main(int argc, const char* argv[]) {
             //cout << "restart, " << branching_vars << " branching vars\n";
             backtrack(0);
             restart_count_down = restart_interval;
-            restart_interval = static_cast<int>(restart_interval * 1.5);
+            restart_interval = restart_interval * 1.5;
         }
 
         // Every time another 100 clauses are learned, we try to delete clauses. 
-        if (clauses.size()-total_clauses >= 2 * kept_clauses) {
+        if (deletion_count_down <= 0) {
             deletion(kept_clauses);
-            kept_clauses *= 1.1;
+            kept_clauses *= kept_clauses_growth;
+            deletion_count_down = learned_clauses.size();
         }
 
         // Always pick the variable of highest priority to branch on.
