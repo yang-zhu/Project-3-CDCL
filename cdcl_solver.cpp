@@ -149,6 +149,8 @@ int Variable::var_to_lit() {
     return this->value==Value::t ? this->id() : -(this->id());
 }
 
+void learn_clause(Clause*);
+
 void Variable::set(Value value, int bd) {
     this->value = value;
     this->bd = bd;
@@ -240,38 +242,33 @@ void exit_unsatisfiable() {
     exit(0);
 }
 
-void equivalence_substitution(set<set<int>>& clauses_lits) {
+
+// Equivalence Substitution
+void Preprocessor::equivalence_substitution() {
     bool changed;
     do {
         changed = false;
-        set<set<int>> clauses_lits_copy = clauses_lits;
-        for (const set<int>& clause_copy: clauses_lits_copy) {
-            if (clause_copy.size() == 2) {
-                int first = *clause_copy.begin();
-                int second = *(++clause_copy.begin());
-                if (clauses_lits.count({-first, -second}) > 0) {
+        set<set<int>> clauses_copy = clauses;
+        for (const set<int>& cl1: clauses_copy) {
+            if (cl1.size() == 2) {
+                int fst = *cl1.begin();
+                int snd = *(++cl1.begin());
+                if (clauses.count({-fst, -snd}) > 0) {
                     changed = true;
-                    for (auto it = clauses_lits.begin(); it != clauses_lits.end();) {
-                        if (it->count(second) > 0 || it->count(-second) > 0) {
-                            set<int> new_cl;
-                            for (int lit: *it) {
-                                if (lit == second) {
-                                    new_cl.insert(-first);
-                                } else if (lit == -second) {
-                                    new_cl.insert(first);
-                                } else {
-                                    new_cl.insert(lit);
-                                }
-                            }
-                            if (!tautology_check(new_cl)) {
-                                clauses_lits.insert(new_cl);
-                                log_new_clause(new_cl);
-                            }
-                            //log_deleted_clause(*it);
-                            it = clauses_lits.erase(it);
-                        } else {
-                            ++it;
+                    cout << "equisub: eliminated " << abs(snd) << "\n";
+                    unordered_set<const set<int>*> to_be_modified = lit_to_cl[snd];
+                    to_be_modified.insert(lit_to_cl[-snd].begin(), lit_to_cl[-snd].end());
+                    for (const set<int>* cl2: to_be_modified) {
+                        set<int> new_cl = *cl2;
+                        int target = new_cl.count(snd) > 0 ? snd : -snd;
+                        new_cl.erase(target);
+                        new_cl.insert(target == snd ? -fst : fst);
+                        if (!tautology_check(new_cl)) {
+                            add_clause(new_cl);
                         }
+                    }
+                    for (const set<int>* cl2: to_be_modified) {
+                        remove_clause(cl2);
                     }
                 }
             }
@@ -290,39 +287,36 @@ unordered_map<int, unordered_set<const set<int>*>> map_lit_to_cl(set<set<int>>& 
     return lit_to_cl;
 }
 
-set<int> get_all_vars(unordered_map<int, unordered_set<const set<int>*>> m) {
+set<int> Preprocessor::get_all_vars() {
     set<int> vars = {};
-    for (const pair<int, unordered_set<const set<int>*>>& p: m) {
+    for (const pair<int, unordered_set<const set<int>*>>& p: lit_to_cl) {
         vars.insert(abs(p.first));
     }
     return vars;
 }
 
-void modify_clauses(int v, set<set<int>>& new_cls, set<set<int>>& cls, unordered_map<int, unordered_set<const set<int>*>>& m, unordered_set<const set<int>*>& to_delete) {
-    if (proof_file) {
-        for (const set<int>& cl: new_cls) {
-            log_new_clause(cl);
-        }
+void Preprocessor::add_clause(const set<int>& cl) {
+    auto it = clauses.insert(cl).first;
+    for (int l: cl) {
+        lit_to_cl[l].insert(&*it);
     }
-
-    for (const set<int>* cl: to_delete) {
-        for (int l: *cl) {
-            m[l].erase(cl);
-        }
-        log_deleted_clause(*cl);
-        cls.erase(*cl);
-    }
-    for (const set<int>& cl: new_cls) {
-        auto it = cls.insert(cl).first;
-        for (int l: cl) {
-            m[l].insert(&*it);
-        }
-    }
+    cl_sig[&*it] = signature(cl);
+    log_new_clause(cl);
 }
 
-void niver(set<set<int>>& clauses) {
-    unordered_map<int,unordered_set<const set<int>*>> lit_to_cl = map_lit_to_cl(clauses);
-    set<int> vars = get_all_vars(lit_to_cl);
+void Preprocessor::remove_clause(const set<int>* cl) {
+    for (int l: *cl) {
+        lit_to_cl[l].erase(cl);
+    }
+    cl_sig.erase(cl);
+    log_deleted_clause(*cl);
+    clauses.erase(*cl);
+}
+
+
+// Non-increasing Variable Elimination Resolution
+void Preprocessor::niver() {
+    set<int> vars = get_all_vars();
 
     bool changed;
     do {
@@ -337,7 +331,7 @@ void niver(set<set<int>>& clauses) {
                 for (const set<int>* cl1: pos_res) {
                     for (const set<int>* cl2: neg_res) {
                         set<int> new_cl = resolution(*cl1, *cl2, v);
-                        if (!tautology_check(new_cl)) {
+                        if (!tautology_check(new_cl) && clauses.count(new_cl) == 0) {
                             new_clauses.insert(move(new_cl));
                         }
                         if (new_clauses.size() > occurrences) {
@@ -345,10 +339,15 @@ void niver(set<set<int>>& clauses) {
                         }
                     }
                 }
+                for (const set<int>& cl: new_clauses) {
+                    add_clause(cl);
+                }
                 unordered_set<const set<int>*> to_delete_cls = pos_res;
                 to_delete_cls.insert(neg_res.begin(), neg_res.end());
-                modify_clauses(v, new_clauses, clauses, lit_to_cl, to_delete_cls);
-                //cout << "eliminated " << v << "\n";
+                for (const set<int>* cl: to_delete_cls) {
+                    remove_clause(cl);
+                }
+                cout << "eliminated " << v << "\n";
                 changed = true;
             }
             done:;
@@ -357,19 +356,7 @@ void niver(set<set<int>>& clauses) {
 }
 
 
-int find_min_lit(const set<int>& cl, unordered_map<int,unordered_set<const set<int>*>>& m) {
-    int min_size = numeric_limits<int>::max();
-    int min_lit = 0;
-    for (int l: cl) {
-        if (m[l].size() < min_size) {
-            min_size = m.size();
-            min_lit = l;
-        }
-    }
-    return min_lit;
-}
-
-uint64_t signature(const set<int>& cl) {
+uint64_t Preprocessor::signature(const set<int>& cl) {
     uint64_t cl_bits = 0;
     for (int l: cl) {
         l = abs(l) % 64;
@@ -379,8 +366,9 @@ uint64_t signature(const set<int>& cl) {
     return cl_bits;
 }
 
-bool subsumes(const set<int>& cl1, const set<int>& cl2, unordered_map<const set<int>*, uint64_t>& m) {
-    if ((m[&cl1] & ~m[&cl2]) != 0) {
+// Subsumption testing
+bool Preprocessor::subsumes(const set<int>& cl1, const set<int>& cl2) {
+    if ((cl_sig.at(&cl1) & ~cl_sig.at(&cl2)) != 0) {
         return false;
     } else {
         for (int l: cl1) {
@@ -392,67 +380,55 @@ bool subsumes(const set<int>& cl1, const set<int>& cl2, unordered_map<const set<
     return true;
 }
 
-void eliminate_subsumed_clauses(set<set<int>>& clauses) {
-    unordered_map <const set<int>*, uint64_t> cl_sig = {};
-    for (const set<int>& cl: clauses) {
-        cl_sig[&cl] = signature(cl);
+vector<const set<int>*> Preprocessor::find_subsumed(const set<int>& sub) {
+    vector<const set<int>*> subsumed;
+    int min_size = numeric_limits<int>::max();
+    int min_lit = 0;
+    for (int l: sub) {
+        if (lit_to_cl[l].size() < min_size) {
+            min_size = lit_to_cl[l].size();
+            min_lit = l;
+        }
     }
-    unordered_map<int,unordered_set<const set<int>*>> lit_to_cl = map_lit_to_cl(clauses);
+    unordered_set<const set<int>*>& supers = lit_to_cl[min_lit];
+    for (const set<int>* sup: supers) {
+        if (subsumes(sub, *sup)) {
+            subsumed.push_back(sup);
+        }
+    }
+    return subsumed;
+}
 
+// Eliminates subsumed clauses from the formula
+void Preprocessor::eliminate_subsumed_clauses() {
     for (const set<int>& cl1: clauses) {
-        int min_lit = find_min_lit(cl1, lit_to_cl);
-        unordered_set<const set<int>*>& candidates = lit_to_cl[min_lit];
-        for (auto it = candidates.begin(); it != candidates.end();) {
-            if (&cl1 != *it && subsumes(cl1, **it, cl_sig)) {
-                for (int l: **it) {
-                    if (l != min_lit) {
-                        lit_to_cl[l].erase(*it);
-                    }
-                }
-                log_deleted_clause(**it);
-                clauses.erase(**it);
-                it = candidates.erase(it);
-            } else {
-                ++it;
+        for (const set<int>* cl2: find_subsumed(cl1)) {
+            if (&cl1 != cl2) {
+                remove_clause(cl2);
+                cout << "eliminated clause\n";
             }
         }
     }
 }
 
-
-void self_subsume(set<set<int>>& clauses) {
-    unordered_map<int,unordered_set<const set<int>*>> lit_to_cl = map_lit_to_cl(clauses);
-    set<int> vars = get_all_vars(lit_to_cl);
-
+// Self-Subsuming Resolution
+void Preprocessor::self_subsume() {
+    set<int> vars = get_all_vars();
     for (int v: vars) {
-        unordered_set<const set<int>*> to_delete_cls = {};
-        set<set<int>> new_cls = {};
-        for (const set<int>* cl: lit_to_cl[v]) {
-            set<int> subset = *cl;
+        for (const set<int>* cl1: lit_to_cl[v]) {
+            set<int> subset = *cl1;
             subset.erase(v);
             subset.insert(-v);
-            int min_lit = find_min_lit(subset, lit_to_cl);
-            unordered_set<const set<int>*>& candidates = lit_to_cl[min_lit];
-            for (auto it = candidates.begin(); it != candidates.end();) {
-                bool remove = true;
-                for (int l: subset) {
-                    if ((*it)->count(l) == 0) {
-                        remove = false;
-                        break;
-                    }
-                }
-                if (remove) {
-                    to_delete_cls.insert(*it);
-                    set<int> new_cl = **it;
-                    new_cl.erase(-v);
-                    new_cls.insert(new_cl);
-                    it = candidates.erase(it);
-                } else {
-                    ++it;
-                }
+            cl_sig[&subset] = signature(subset);
+            for (const set<int>* cl2: find_subsumed(subset)) {
+                set<int> new_cl = *cl2;
+                new_cl.erase(-v);
+                add_clause(new_cl);
+                remove_clause(cl2);
+                cout << "strengthened clause\n";
             }
+            cl_sig.erase(&subset);
         }
-        modify_clauses(v, new_cls, clauses, lit_to_cl, to_delete_cls);
     }
 }
 
@@ -503,20 +479,23 @@ void fromFile(string path) {
             clauses_lits.insert(lits_set);          
         }
 
-        for (Preprocess p: preprocessings) {
-            switch(p) {
-                case Preprocess::equisub:
-                    equivalence_substitution(clauses_lits);
-                    break;
-                case Preprocess::subs:
-                    eliminate_subsumed_clauses(clauses_lits);
-                    break;
-                case Preprocess::niver:
-                    niver(clauses_lits);
-                    break;
-                case Preprocess::selfsubs:
-                    self_subsume(clauses_lits);
-                    break;
+        if (!preprocessings.empty()) {
+            Preprocessor prep = Preprocessor(clauses_lits);
+            for (Preprocess p: preprocessings) {
+                switch(p) {
+                    case Preprocess::equisub:
+                        prep.equivalence_substitution();
+                        break;
+                    case Preprocess::subs:
+                        prep.eliminate_subsumed_clauses();
+                        break;
+                    case Preprocess::niver:
+                        prep.niver();
+                        break;
+                    case Preprocess::selfsubs:
+                        prep.self_subsume();
+                        break;
+                }
             }
         }
 
@@ -601,6 +580,8 @@ void count_incr(const vector<int>& lits) {
 double get_vm_count(int lit) {
     return lit > 0 ? lit_to_var(lit)->pos_count : lit_to_var(lit)->neg_count;
 }
+
+void backtrack(int);
 
 // Derives an asserting conflict clause
 void learn_clause(Clause* cl) {
@@ -768,7 +749,7 @@ int main(int argc, const char* argv[]) {
             else if (option == "-vsids2") { heuristic = Heuristic::vsids2; }
             else if (option == "-vmtf") { heuristic = Heuristic::vmtf; }
             else if (option == "-equisub") { preprocessings.push_back(Preprocess::equisub); }
-            else if (option == "-subsume") { preprocessings.push_back(Preprocess::subs); }
+            else if (option == "-subs") { preprocessings.push_back(Preprocess::subs); }
             else if (option == "-niver") { preprocessings.push_back(Preprocess::niver); }
             else if (option == "-selfsubs") { preprocessings.push_back(Preprocess::selfsubs); }
             else if (option == "-kept_clauses") {
@@ -776,7 +757,7 @@ int main(int argc, const char* argv[]) {
                 ++i;
             }
             else if (option == "-kept_clauses_growth") {
-                kept_clauses_growth = stoi(argv[i+1]);
+                kept_clauses_growth = stod(argv[i+1]);
                 ++i;
             }
             else if (option == "-kept_clause_width") {

@@ -5,13 +5,15 @@
 #include <fstream> 
 #include <vector>
 #include <set> 
-#include <deque> 
 #include <string>
 #include <cassert>
 #include <map>
 #include <cmath> 
 #include <limits>
 #include <cstdlib>
+#include <unordered_set>
+#include <unordered_map>
+#include <_types/_uint64_t.h>
 
 using namespace std;
 
@@ -54,10 +56,6 @@ enum class Heuristic {
     vsids1, vsids2, vmtf
 };
 
-enum class Preprocess {
-    equisub, subs, niver, selfsubs
-};
-
 bool greater_than(Variable*, Variable*);
 
 struct Heap {  // a max-heap
@@ -80,10 +78,34 @@ struct Heap {  // a max-heap
     Variable* max();
 };
 
-void learn_clause(Clause*);
+enum class Preprocess {
+    equisub, subs, niver, selfsubs
+};
 
-void backtrack(int);
+struct Preprocessor {
+    set<set<int>>& clauses;
+    unordered_map<int, unordered_set<const set<int>*>> lit_to_cl;
+    unordered_map <const set<int>*, uint64_t> cl_sig;
 
-void unit_prop();
+    Preprocessor(set<set<int>>& clauses): clauses(clauses) {
+        for (const set<int>& cl: clauses) {
+            for (int l: cl) {
+                lit_to_cl[l].insert(&cl);
+            }
+            cl_sig[&cl] = signature(cl);
+        }
+    }
+
+    uint64_t signature(const set<int>& cl);
+    set<int> get_all_vars();
+    void add_clause(const set<int>& cl);
+    void remove_clause(const set<int>* cl);
+    void equivalence_substitution();
+    void niver();
+    bool subsumes(const set<int>& cl1, const set<int>& cl2);
+    vector<const set<int>*> find_subsumed(const set<int>& cl);
+    void eliminate_subsumed_clauses();
+    void self_subsume();
+};
 
 #endif
