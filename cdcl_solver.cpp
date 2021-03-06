@@ -14,20 +14,22 @@ vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 Heuristic heuristic = Heuristic::vmtf;
+int num_branchings = 0;
 int branchings = 0;
 double max_vm_score = 0;
 
 int deletion_count_down = 100;
-int kept_clauses = 500;
-double kept_clauses_growth = 1.1;
+int kept_clauses = 600;
+double kept_clauses_growth = 1.0;
 int kept_clause_width = 5;
 int kept_clause_unset_lits = 4;
 int unset_lits_weight = 5;
 
-int num_branchings = 0;
 int restart_interval = 100;
 int restart_count_down = 100;
+double interval_growth = 1.5;
 bool phase_saving = true;
+
 vector<Preprocess> preprocessings;
 ofstream* proof_file = nullptr;
 
@@ -255,7 +257,7 @@ void Preprocessor::equivalence_substitution() {
                 int snd = *(++cl1.begin());
                 if (clauses.count({-fst, -snd}) > 0) {
                     changed = true;
-                    cout << "equisub: eliminated " << abs(snd) << "\n";
+                    // cout << "equisub: eliminated " << abs(snd) << "\n";
                     unordered_set<const set<int>*> to_be_modified = lit_to_cl[snd];
                     to_be_modified.insert(lit_to_cl[-snd].begin(), lit_to_cl[-snd].end());
                     for (const set<int>* cl2: to_be_modified) {
@@ -347,7 +349,7 @@ void Preprocessor::niver() {
                 for (const set<int>* cl: to_delete_cls) {
                     remove_clause(cl);
                 }
-                cout << "eliminated " << v << "\n";
+                // cout << "eliminated " << v << "\n";
                 changed = true;
             }
             done:;
@@ -405,7 +407,7 @@ void Preprocessor::eliminate_subsumed_clauses() {
         for (const set<int>* cl2: find_subsumed(cl1)) {
             if (&cl1 != cl2) {
                 remove_clause(cl2);
-                cout << "eliminated clause\n";
+                // cout << "eliminated clause\n";
             }
         }
     }
@@ -425,7 +427,7 @@ void Preprocessor::self_subsume() {
                 new_cl.erase(-v);
                 add_clause(new_cl);
                 remove_clause(cl2);
-                cout << "strengthened clause\n";
+                // cout << "strengthened clause\n";
             }
             cl_sig.erase(&subset);
         }
@@ -772,6 +774,12 @@ int main(int argc, const char* argv[]) {
                 unset_lits_weight = stoi(argv[i+1]);
                 ++i;
             }
+            else if (option == "-restart_interval") {
+                restart_interval = stoi(argv[i+1]);
+            }
+            else if (option == "-interval_growth") {
+                interval_growth = stod(argv[i+1]);
+            }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
                 ++i;
@@ -835,7 +843,7 @@ int main(int argc, const char* argv[]) {
             //cout << "restart, " << branching_vars << " branching vars\n";
             backtrack(0);
             restart_count_down = restart_interval;
-            restart_interval = restart_interval * 1.5;
+            restart_interval = restart_interval * interval_growth;
         }
 
         // Every time another 100 clauses are learned, we try to delete clauses. 
