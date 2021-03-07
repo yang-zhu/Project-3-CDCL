@@ -1,11 +1,4 @@
 #include "cdcl_solver.h"
-#include <_types/_uint64_t.h>
-#include <cstdint>
-#include <cstdlib>
-#include <fstream>
-#include <ostream>
-#include <unordered_set>
-#include <unordered_map>
 
 vector<Variable> variables;
 vector<Clause*> orig_clauses;
@@ -13,6 +6,7 @@ vector<Clause*> learned_clauses;
 vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
+
 Heuristic heuristic = Heuristic::vmtf;
 int num_branchings = 0;
 int branchings = 0;
@@ -31,6 +25,8 @@ double interval_growth = 1.5;
 bool phase_saving = true;
 
 vector<Preprocess> preprocessings;
+set<set<int>> eliminated_clauses;
+
 ofstream* proof_file = nullptr;
 
 bool greater_than(Variable* v1, Variable* v2) {
@@ -117,6 +113,9 @@ Variable* Heap::max() {
     return this->heap[1];
 }
 
+bool Heap::empty() {
+    return this->heap.size() == 1;
+}
 
 void log_new_clause(const set<int>& lits) {
     if (proof_file) {
@@ -245,40 +244,6 @@ void exit_unsatisfiable() {
 }
 
 
-// Equivalence Substitution
-void Preprocessor::equivalence_substitution() {
-    bool changed;
-    do {
-        changed = false;
-        set<set<int>> clauses_copy = clauses;
-        for (const set<int>& cl1: clauses_copy) {
-            if (cl1.size() == 2) {
-                int fst = *cl1.begin();
-                int snd = *(++cl1.begin());
-                if (clauses.count({-fst, -snd}) > 0) {
-                    changed = true;
-                    // cout << "equisub: eliminated " << abs(snd) << "\n";
-                    unordered_set<const set<int>*> to_be_modified = lit_to_cl[snd];
-                    to_be_modified.insert(lit_to_cl[-snd].begin(), lit_to_cl[-snd].end());
-                    for (const set<int>* cl2: to_be_modified) {
-                        set<int> new_cl = *cl2;
-                        int target = new_cl.count(snd) > 0 ? snd : -snd;
-                        new_cl.erase(target);
-                        new_cl.insert(target == snd ? -fst : fst);
-                        if (!tautology_check(new_cl)) {
-                            add_clause(new_cl);
-                        }
-                    }
-                    for (const set<int>* cl2: to_be_modified) {
-                        remove_clause(cl2);
-                    }
-                }
-            }
-        }
-    } while (changed);
-}
-
-
 unordered_map<int, unordered_set<const set<int>*>> map_lit_to_cl(set<set<int>>& clauses) {
     unordered_map<int, unordered_set<const set<int>*>> lit_to_cl = {};
     for (const set<int>& cl: clauses) {
@@ -312,7 +277,42 @@ void Preprocessor::remove_clause(const set<int>* cl) {
     }
     cl_sig.erase(cl);
     log_deleted_clause(*cl);
+    eliminated_clauses.insert(*cl);
     clauses.erase(*cl);
+}
+
+
+// Equivalence Substitution
+void Preprocessor::equivalence_substitution() {
+    bool changed;
+    do {
+        changed = false;
+        set<set<int>> clauses_copy = clauses;
+        for (const set<int>& cl1: clauses_copy) {
+            if (cl1.size() == 2) {
+                int fst = *cl1.begin();
+                int snd = *(++cl1.begin());
+                if (clauses.count({-fst, -snd}) > 0) {
+                    changed = true;
+                    // cout << "equisub: eliminated " << abs(snd) << "\n";
+                    unordered_set<const set<int>*> to_be_modified = lit_to_cl[snd];
+                    to_be_modified.insert(lit_to_cl[-snd].begin(), lit_to_cl[-snd].end());
+                    for (const set<int>* cl2: to_be_modified) {
+                        set<int> new_cl = *cl2;
+                        int target = new_cl.count(snd) > 0 ? snd : -snd;
+                        new_cl.erase(target);
+                        new_cl.insert(target == snd ? -fst : fst);
+                        if (!tautology_check(new_cl)) {
+                            add_clause(new_cl);
+                        }
+                    }
+                    for (const set<int>* cl2: to_be_modified) {
+                        remove_clause(cl2);
+                    }
+                }
+            }
+        }
+    } while (changed);
 }
 
 
@@ -349,7 +349,7 @@ void Preprocessor::niver() {
                 for (const set<int>* cl: to_delete_cls) {
                     remove_clause(cl);
                 }
-                // cout << "eliminated " << v << "\n";
+                cout << "eliminated " << v << "\n";
                 changed = true;
             }
             done:;
@@ -502,7 +502,6 @@ void fromFile(string path) {
         }
 
         after_preprocessing(clauses_lits);
-        //assert(variables.size() == num_vars+1);
     }
 }
 
@@ -740,6 +739,64 @@ void deletion(int budget) {
 }
 
 
+void solve() {
+    // There could be unit clauses in the original formula. If unit-propagation solves the whole formula, the following while-loop will not be executed.
+    unit_prop();
+    
+    while (!unassigned_vars.empty()) {   
+        if (heuristic == Heuristic::vsids1 || heuristic == Heuristic::vsids2) {
+            // only resort the heap when certain number of branchings is reached
+            if (branchings <= 255) {
+                ++branchings;        
+            } else {
+                for(Variable& var: variables) {
+                    if (heuristic == Heuristic::vsids1) {
+                        var.vs_pos_score = var.vs_pos_score/2 + var.pos_count;
+                        var.vs_neg_score = var.vs_neg_score/2 + var.neg_count;
+                        var.pos_count = 0;
+                        var.neg_count = 0;
+                        branchings = 0;
+                    } else {
+                        var.pos_count /= 2;
+                        var.neg_count /= 2;
+                        branchings = 0;
+                    }
+                }
+                if (heuristic == Heuristic::vsids1) {
+                    for (int i = unassigned_vars.heap.size()-1; i > 0; --i) {
+                        unassigned_vars.move_down(unassigned_vars.heap[i]);
+                    }
+                }
+            }
+        }
+
+        if (restart_count_down <= 0) {
+            // int branching_vars = 0;
+            // for (Variable* v : assignments) {
+            //     if (v->reason == nullptr) branching_vars++;
+            // }
+            //cout << "restart, " << branching_vars << " branching vars\n";
+            backtrack(0);
+            restart_count_down = restart_interval;
+            restart_interval = restart_interval * interval_growth;
+        }
+
+        // Every time another 100 clauses are learned, we try to delete clauses. 
+        if (deletion_count_down <= 0) {
+            deletion(kept_clauses);
+            kept_clauses *= kept_clauses_growth;
+            deletion_count_down = learned_clauses.size();
+        }
+
+        // Always pick the variable of highest priority to branch on.
+        ++num_branchings;
+        Variable* picked_var = unassigned_vars.max();
+        picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
+        unit_prop();
+    }
+}
+
+
 int main(int argc, const char* argv[]) {
     string filename;
      
@@ -801,64 +858,41 @@ int main(int argc, const char* argv[]) {
     }
 
     fromFile(filename);
-    // Fill the unassigned_vars heap. Originally all variables are unassigned.
-    for (int i = 1; i < variables.size(); ++i) {
-        unassigned_vars.insert(&variables[i]);
+    set<Variable*> vars;
+    for (Clause* cl: orig_clauses) {
+        for (int l: cl->lits) {
+            vars.insert(lit_to_var(l));
+        }
     }
-    // There could be unit clauses in the original formula. If unit-propagation solves the whole formula, the following while-loop will not be executed.
-    unit_prop();
+    for (Variable* var: vars) {
+        unassigned_vars.insert(var);
+    }
     
-    while (variables.size()-1 != assignments.size()) {   
-        if (heuristic == Heuristic::vsids1 || heuristic == Heuristic::vsids2) {
-            // only resort the heap when certain number of branchings is reached
-            if (branchings <= 255) {
-                ++branchings;        
-            } else {
-                for(Variable& var: variables) {
-                    if (heuristic == Heuristic::vsids1) {
-                        var.vs_pos_score = var.vs_pos_score/2 + var.pos_count;
-                        var.vs_neg_score = var.vs_neg_score/2 + var.neg_count;
-                        var.pos_count = 0;
-                        var.neg_count = 0;
-                        branchings = 0;
-                    } else {
-                        var.pos_count /= 2;
-                        var.neg_count /= 2;
-                        branchings = 0;
-                    }
-                }
-                if (heuristic == Heuristic::vsids1) {
-                    for (int i = unassigned_vars.heap.size()-1; i > 0; --i) {
-                        unassigned_vars.move_down(unassigned_vars.heap[i]);
-                    }
-                }
+    solve();
+
+    if (!preprocessings.empty()) {
+        phase_saving = true;
+        for (int i = 1; i < variables.size(); ++i) {
+            if (variables[i].value == Value::unset) {
+                unassigned_vars.insert(&variables[i]);
             }
         }
-
-        if (restart_count_down <= 0) {
-            // int branching_vars = 0;
-            // for (Variable* v : assignments) {
-            //     if (v->reason == nullptr) branching_vars++;
-            // }
-            //cout << "restart, " << branching_vars << " branching vars\n";
-            backtrack(0);
-            restart_count_down = restart_interval;
-            restart_interval = restart_interval * interval_growth;
+        backtrack(-1);
+        for (Clause* cl: orig_clauses) {
+            if (cl->lits.size() == 1) {
+                unit_clauses.push_back(cl);
+            }
         }
-
-        // Every time another 100 clauses are learned, we try to delete clauses. 
-        if (deletion_count_down <= 0) {
-            deletion(kept_clauses);
-            kept_clauses *= kept_clauses_growth;
-            deletion_count_down = learned_clauses.size();
+        for (const set<int>& cl: eliminated_clauses) {
+            if (cl.size() == 1) {
+                add_unit_clause({*cl.begin()}, orig_clauses);
+            } else {
+                add_clause(vector<int>(cl.begin(), cl.end()), orig_clauses, *cl.begin(), *(++cl.begin()));
+            }
         }
-
-        // Always pick the variable of highest priority to branch on.
-        ++num_branchings;
-        Variable* picked_var = unassigned_vars.max();
-        picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
-        unit_prop();
+        solve();
     }
+
     cout << "s SATISFIABLE\n";
     cout << "v ";
     for (int i = 1; i < variables.size(); ++i) {

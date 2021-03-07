@@ -7,13 +7,12 @@
 #include <set> 
 #include <string>
 #include <cassert>
-#include <map>
-#include <cmath> 
 #include <limits>
 #include <cstdlib>
 #include <unordered_set>
 #include <unordered_map>
-#include <_types/_uint64_t.h>
+#include <cstdint>
+#include <algorithm>
 
 using namespace std;
 
@@ -76,6 +75,7 @@ struct Heap {  // a max-heap
     void move_up(Variable*);
     void move_down(Variable*);
     Variable* max();
+    bool empty();
 };
 
 enum class Preprocess {
