@@ -8,13 +8,13 @@ vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 
 Heuristic heuristic = Heuristic::vmtf;
-int num_branchings = 0;
+// int num_branchings = 0;
 int branchings = 0;
 double max_vm_score = 0;
 
 int deletion_count_down = 100;
-int kept_clauses = 600;
-double kept_clauses_growth = 1.0;
+int kept_clauses = 500;
+int kept_clauses_growth = 50;
 int kept_clause_width = 5;
 int kept_clause_unset_lits = 4;
 int unset_lits_weight = 5;
@@ -25,7 +25,7 @@ double interval_growth = 1.5;
 bool phase_saving = true;
 
 vector<Preprocess> preprocessings;
-set<set<int>> eliminated_clauses;
+set<set<int>> eliminated_clauses;  // stores all the clauses that are deleted during preprocessing
 
 ofstream* proof_file = nullptr;
 
@@ -127,7 +127,7 @@ void log_new_clause(const set<int>& lits) {
 }
 
 template<class T>
-void log_deleted_clause(const T& lits) {
+void log_deleted_clause(const T& lits) {  // lits could be a set (in preprocessing stage) or a vector
     if (proof_file) {
         *proof_file << "d ";
         for (int lit: lits) {
@@ -232,7 +232,7 @@ set<int> resolution(const T& cl1, set<int> cl2, int var) {
             cl2.erase(-lit);
             continue;
         }
-        cl2.insert(lit);  // lits as a set will eliminate all the duplicate literals (the two clauses could have several shared literals)
+        cl2.insert(lit);
     }
     return cl2;
 }
@@ -244,16 +244,6 @@ void exit_unsatisfiable() {
 }
 
 
-unordered_map<int, unordered_set<const set<int>*>> map_lit_to_cl(set<set<int>>& clauses) {
-    unordered_map<int, unordered_set<const set<int>*>> lit_to_cl = {};
-    for (const set<int>& cl: clauses) {
-        for (int l: cl) {
-            lit_to_cl[l].insert(&cl);
-        }
-    }
-    return lit_to_cl;
-}
-
 set<int> Preprocessor::get_all_vars() {
     set<int> vars = {};
     for (const pair<int, unordered_set<const set<int>*>>& p: lit_to_cl) {
@@ -263,7 +253,7 @@ set<int> Preprocessor::get_all_vars() {
 }
 
 void Preprocessor::add_clause(const set<int>& cl) {
-    auto it = clauses.insert(cl).first;
+    auto it = clauses.insert(cl).first;  // returns an iterator to the inserted element if the element does not exist, otherwise returns an iterator to the existing element
     for (int l: cl) {
         lit_to_cl[l].insert(&*it);
     }
@@ -278,9 +268,8 @@ void Preprocessor::remove_clause(const set<int>* cl) {
     cl_sig.erase(cl);
     log_deleted_clause(*cl);
     eliminated_clauses.insert(*cl);
-    clauses.erase(*cl);
+    clauses.erase(*cl);  // the clause has to be removed from clauses in the end, otherwise it leads to dangling pointers in lit_to_cl and cl_sig
 }
-
 
 // Equivalence Substitution
 void Preprocessor::equivalence_substitution() {
@@ -288,7 +277,7 @@ void Preprocessor::equivalence_substitution() {
     do {
         changed = false;
         set<set<int>> clauses_copy = clauses;
-        for (const set<int>& cl1: clauses_copy) {
+        for (const set<int>& cl1: clauses_copy) {  // iterates over the copy instead of the original set, because we are modifying it along the way
             if (cl1.size() == 2) {
                 int fst = *cl1.begin();
                 int snd = *(++cl1.begin());
@@ -306,6 +295,7 @@ void Preprocessor::equivalence_substitution() {
                             add_clause(new_cl);
                         }
                     }
+                    // The original clauses are deleted in the end, because we do not want to delete the two clauses {fst, snd} and {-first, -snd} too early, since they are used in the proof file to justify the newly added clauses.
                     for (const set<int>* cl2: to_be_modified) {
                         remove_clause(cl2);
                     }
@@ -315,8 +305,7 @@ void Preprocessor::equivalence_substitution() {
     } while (changed);
 }
 
-
-// Non-increasing Variable Elimination Resolution
+// Non-increasing Variable Elimination Resolution (NiVER)
 void Preprocessor::niver() {
     set<int> vars = get_all_vars();
 
@@ -325,16 +314,17 @@ void Preprocessor::niver() {
         changed = false;
         for (int v: vars) {
             unordered_set<const set<int>*>& pos_res = lit_to_cl[v];
-            unordered_set<const set<int>*>& neg_res = lit_to_cl[-v]; 
+            unordered_set<const set<int>*>& neg_res = lit_to_cl[-v];
+            // The method is only applied to variables x where x or ¬x has at most 10 occurrences.
             if (min(pos_res.size(), neg_res.size()) <= 10) {
                 set<set<int>> new_clauses = {};
                 int occurrences = pos_res.size() + neg_res.size();
-                if (occurrences == 0) { continue; }
+                if (occurrences == 0) { continue; }  // in this case, changed should remain false
                 for (const set<int>* cl1: pos_res) {
                     for (const set<int>* cl2: neg_res) {
                         set<int> new_cl = resolution(*cl1, *cl2, v);
-                        if (!tautology_check(new_cl) && clauses.count(new_cl) == 0) {
-                            new_clauses.insert(move(new_cl));
+                        if (!tautology_check(new_cl) && clauses.count(new_cl) == 0) {  // a new clause derived from resolution that already exists in the clauses set is not counted in
+                            new_clauses.insert(move(new_cl)); 
                         }
                         if (new_clauses.size() > occurrences) {
                             goto done;
@@ -349,7 +339,7 @@ void Preprocessor::niver() {
                 for (const set<int>* cl: to_delete_cls) {
                     remove_clause(cl);
                 }
-                cout << "eliminated " << v << "\n";
+                // cout << "eliminated " << v << "\n";
                 changed = true;
             }
             done:;
@@ -357,18 +347,17 @@ void Preprocessor::niver() {
     } while(changed);
 }
 
-
 uint64_t Preprocessor::signature(const set<int>& cl) {
     uint64_t cl_bits = 0;
     for (int l: cl) {
-        l = abs(l) % 64;
+        l = abs(l) % 64;  // hash function
         uint64_t l_bits = uint64_t{1} << l;
         cl_bits |= l_bits;
     }
     return cl_bits;
 }
 
-// Subsumption testing
+// Subsumption testing: tests if cl1 subsumes cl2
 bool Preprocessor::subsumes(const set<int>& cl1, const set<int>& cl2) {
     if ((cl_sig.at(&cl1) & ~cl_sig.at(&cl2)) != 0) {
         return false;
@@ -382,20 +371,22 @@ bool Preprocessor::subsumes(const set<int>& cl1, const set<int>& cl2) {
     return true;
 }
 
-vector<const set<int>*> Preprocessor::find_subsumed(const set<int>& sub) {
+// Collects clauses that are subsumed by the clause subset.
+vector<const set<int>*> Preprocessor::find_subsumed(const set<int>& subset) {
     vector<const set<int>*> subsumed;
+    // for efficiency we only consider literals that appear least often
     int min_size = numeric_limits<int>::max();
     int min_lit = 0;
-    for (int l: sub) {
+    for (int l: subset) {
         if (lit_to_cl[l].size() < min_size) {
             min_size = lit_to_cl[l].size();
             min_lit = l;
         }
     }
     unordered_set<const set<int>*>& supers = lit_to_cl[min_lit];
-    for (const set<int>* sup: supers) {
-        if (subsumes(sub, *sup)) {
-            subsumed.push_back(sup);
+    for (const set<int>* super: supers) {
+        if (subsumes(subset, *super)) {
+            subsumed.push_back(super);
         }
     }
     return subsumed;
@@ -421,7 +412,9 @@ void Preprocessor::self_subsume() {
             set<int> subset = *cl1;
             subset.erase(v);
             subset.insert(-v);
-            cl_sig[&subset] = signature(subset);
+            // &subset does not exist in cl_sig. Therefore we add it in cl_sig on the fly and delete it afterwards.
+            cl_sig[&subset] = signature(subset);  
+            // If a clause D = D' ∪ ¬a is subsumed by (C'\a) ∪ ¬a, then D can be strengthened to D'.
             for (const set<int>* cl2: find_subsumed(subset)) {
                 set<int> new_cl = *cl2;
                 new_cl.erase(-v);
@@ -433,6 +426,7 @@ void Preprocessor::self_subsume() {
         }
     }
 }
+
 
 void after_preprocessing(set<set<int>>&);
 
@@ -467,7 +461,7 @@ void fromFile(string path) {
 
         set<set<int>> clauses_lits;
         for (int i = 0; i < num_clauses; ++i) {
-            set<int> lits_set;  // removes duplicate literals; for detecting tautological clause
+            set<int> lits_set;  // removes duplicate literals; for detecting tautological clauses
             int lit;
             file >> lit;
             while (lit != 0) {
@@ -505,6 +499,7 @@ void fromFile(string path) {
     }
 }
 
+
 Clause* add_unit_clause(const vector<int>& lits, vector<Clause*>& clauses) {
     int first = lits[0];
     clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
@@ -528,7 +523,7 @@ void after_preprocessing(set<set<int>>& clauses) {
             vector<int> lits = vector<int>(lits_set.begin(), lits_set.end());
             if (lits.size() == 1) { add_unit_clause(lits, orig_clauses); }
             // choose two arbitrary literals as the watched literals of the clause
-            else { add_clause(lits, orig_clauses, lits[0], lits.back()); }
+            else { add_clause(lits, orig_clauses, lits[0], lits[1]); }
             
             for (int lit: lits) {
                 (lit > 0 ? lit_to_var(lit)->vs_pos_score : lit_to_var(lit)->vs_neg_score) += 1;
@@ -551,10 +546,11 @@ void after_preprocessing(set<set<int>>& clauses) {
 }
 
 
+// Reduces the size of the learned clause
 void minimize_clause(set<int>& cl) {
     for (auto it = cl.begin(); it != cl.end();) {
         bool remove = true;
-        if (lit_to_var(*it)->reason) {
+        if (lit_to_var(*it)->reason) {  // a branching literal does not have a reason
             for (int l: lit_to_var(*it)->reason->lits) {
                 if (l != -*it && cl.count(l) == 0) { 
                     remove = false;
@@ -628,7 +624,6 @@ void learn_clause(Clause* cl) {
                     learned_cl = add_clause(learned_cl_lits, learned_clauses, -watched[0]->var_to_lit(), -watched[1]->var_to_lit());              
                 }
 
-                // writes the learned clause into the proof file
                 log_new_clause(conflict_cl); 
 
                 // Increments the counters for the literals in the newly learned clause.
@@ -666,6 +661,7 @@ void backtrack(int depth) {
     --deletion_count_down;
 }
 
+
 // Unit propagation
 void unit_prop() {
     while (!unit_clauses.empty()) {
@@ -694,10 +690,11 @@ int clause_score (Clause* cl) {
     for (int l: cl->lits) {
         if (lit_to_var(l)->value == Value::unset) { ++unset_lits; }
     }
+    // learned clauses within a certain width and a contain certain amount of unassigned literals are kept forever
     if (unset_lits <= kept_clause_unset_lits && cl->lits.size() <= kept_clause_width) {
        return 0;
     }
-    return unset_lits == 0 ? 0 : 5*unset_lits+cl->lits.size();
+    return unset_lits == 0 ? 0 : unset_lits_weight*unset_lits+cl->lits.size();
 }
 
 void delete_watched_occ(vector<Clause*>& watched_occ) {
@@ -709,13 +706,13 @@ void deletion(int budget) {
     for (Clause* cl: learned_clauses) {
         cl_to_score.push_back(make_pair(cl, clause_score(cl)));
     }
+    // sorts the learned clauses ascendingly according to their scores
     sort(cl_to_score.begin(), cl_to_score.end(), [](pair<Clause*,int> p1, pair<Clause*,int> p2) { return p1.second < p2.second; });
 
     for (int i = budget; i < cl_to_score.size(); ++i) {
         pair<Clause*,int> p = cl_to_score[i];
         if (p.second == 0) { continue; }
         p.first->to_be_deleted = true;
-        // deletes the clause in the proof file
         log_deleted_clause(p.first->lits);
     }
     
@@ -735,7 +732,6 @@ void deletion(int budget) {
             ++i;
         }
     }
-    //cout << "deleted " << (cl_to_score.size() - (clauses.size() - total_clauses)) << " of " << cl_to_score.size()  << " clauses\n";
 }
 
 
@@ -763,33 +759,33 @@ void solve() {
                     }
                 }
                 if (heuristic == Heuristic::vsids1) {
+                    // In VSIDS1 the heap has to be resorted explicitly, because the variables may either move up or down in the heap. VSIDS2 does not need this because it only uses pos_count/neg_count, which are only updated when the variable is assigned and assigned variables are not part of the heap.
                     for (int i = unassigned_vars.heap.size()-1; i > 0; --i) {
+                        // heapify the heap from bottom to top
                         unassigned_vars.move_down(unassigned_vars.heap[i]);
                     }
                 }
             }
         }
 
+        // We have two restarts strategies, one restarts with a fixed interval, the other one restarts with an interval that grows exponentially. The fixed interval policy sets the interval_growth to 1. 
         if (restart_count_down <= 0) {
-            // int branching_vars = 0;
-            // for (Variable* v : assignments) {
-            //     if (v->reason == nullptr) branching_vars++;
-            // }
-            //cout << "restart, " << branching_vars << " branching vars\n";
-            backtrack(0);
+            backtrack(0);  // backtracking till the branching depths of variables on the assignments stack are 0 will clear all the branching literals
             restart_count_down = restart_interval;
             restart_interval = restart_interval * interval_growth;
         }
 
-        // Every time another 100 clauses are learned, we try to delete clauses. 
+        // We have two deletion strategies: 
+        // 1. We keep a budget of learned clauses and the budget grows linearly
+        // 2. We do not keep a budget by setting the kept_clauses and kept_clauses_growth to 0. Instead we use the kept_clause_width and kept_clause_unset_lits to control the number of kept clauses.
         if (deletion_count_down <= 0) {
             deletion(kept_clauses);
-            kept_clauses *= kept_clauses_growth;
+            kept_clauses += kept_clauses_growth;
             deletion_count_down = learned_clauses.size();
         }
 
+        // ++num_branchings;
         // Always pick the variable of highest priority to branch on.
-        ++num_branchings;
         Variable* picked_var = unassigned_vars.max();
         picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
         unit_prop();
@@ -816,7 +812,7 @@ int main(int argc, const char* argv[]) {
                 ++i;
             }
             else if (option == "-kept_clauses_growth") {
-                kept_clauses_growth = stod(argv[i+1]);
+                kept_clauses_growth = stoi(argv[i+1]);
                 ++i;
             }
             else if (option == "-kept_clause_width") {
@@ -843,9 +839,23 @@ int main(int argc, const char* argv[]) {
             }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
-                cout << "-vsids1\tuse the VSIDS heuristic\n";
-                cout << "-vsids2\tuse the VSIDS heuristic\n";
+                cout << "-vsids1\tuse the VSIDS heuristic (by-the-book implementation)\n";
+                cout << "-vsids2\tuse the VSIDS heuristic (directly update the score in the heap)\n";
                 cout << "-vmtf\tuse the VMTF heuristic\n";
+                cout << "\n";
+                cout << "-equisub\tapply equivalence substitution in preprocessing\n";
+                cout << "-niver\tapply NiVER in preprocessing\n";
+                cout << "-subs\tapply subsumption testing in preprocessing\n";
+                cout << "-selfsubs\tapply self-subsuming resolution in preprocessing\n";
+                cout << "\n";
+                cout << "-kept_clauses <int>\tinitial number of learned clauses to be kept\n";
+                cout << "-kept_clauses_growth <int>\trate by which kept_clauses grows\n";
+                cout << "-kept_clause_unset_lits <int>\tupper bound of number of unset literals in kept learned clauses\n";
+                cout << "-kept_clause_width <int>\tupper bound of width of kept learned clauses\n";
+                cout << "-unset_lits_weight <int>\tthe weight for kept_clause_unset_lits while computing the scores for learned clauses";
+                cout << "-restart_inverval <int>\tthe initial interval of restarts\n";
+                cout << "-inverval_growth <double>\tfactor by which restart_interval grows\n";
+                cout << "-proof <filename>\twrites the proof in DRAT format into a file\n";
                 exit(1);
             }
         } else { filename = option; }
@@ -870,19 +880,21 @@ int main(int argc, const char* argv[]) {
     
     solve();
 
+    // Preprocessing may have eliminated variables. To get the correct result for all variables in the satisfiable case, we rerun the solver on all variables.
     if (!preprocessings.empty()) {
-        phase_saving = true;
+        phase_saving = true;  // phase saving preserves previous assignments
         for (int i = 1; i < variables.size(); ++i) {
             if (variables[i].value == Value::unset) {
                 unassigned_vars.insert(&variables[i]);
             }
         }
-        backtrack(-1);
+        backtrack(-1);  // clears the whole assignment stack
         for (Clause* cl: orig_clauses) {
             if (cl->lits.size() == 1) {
                 unit_clauses.push_back(cl);
             }
         }
+        // adds back in eliminated clauses
         for (const set<int>& cl: eliminated_clauses) {
             if (cl.size() == 1) {
                 add_unit_clause({*cl.begin()}, orig_clauses);

@@ -33,16 +33,16 @@ enum class Value {
 struct Variable {
     int bd = -1;
     Value value = Value::unset;
-    Value old_value = Value::unset;
+    Value old_value = Value::unset;  // stores the old value for phase saving
     vector<Clause*> pos_watched_occ;
     vector<Clause*> neg_watched_occ;
     Clause* reason = nullptr;
     int heap_position = 0;  // A variable's position in the heap, which is used to update the heap.
-    double vs_pos_score = 0;
+    double vs_pos_score = 0;  // VSIDS heuristic score for the positive literal
     double vs_neg_score = 0;
-    double vm_pos_score = 0;
+    double vm_pos_score = 0;  // VMTF heuritstic score for the positive literal
     double vm_neg_score = 0;
-    double pos_count = 0;
+    double pos_count = 0;  // In VSIDS it is the number of times the positive literal occurs in newly learned clauses, while in VMTF it also includes the number of occurrences of the positive literal in the original formula.
     double neg_count = 0;
     
     int id();
@@ -84,7 +84,9 @@ enum class Preprocess {
 
 struct Preprocessor {
     set<set<int>>& clauses;
+    // Maps every literal to the clauses it appears in. The values are pointers pointing into the clauses set.
     unordered_map<int, unordered_set<const set<int>*>> lit_to_cl;
+    // Maps every clause to its signature for fast subsumption testing.
     unordered_map <const set<int>*, uint64_t> cl_sig;
 
     Preprocessor(set<set<int>>& clauses): clauses(clauses) {
