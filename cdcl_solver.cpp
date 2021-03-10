@@ -1,4 +1,5 @@
 #include "cdcl_solver.h"
+#include <utility>
 
 vector<Variable> variables;
 vector<Clause*> orig_clauses;
@@ -8,7 +9,7 @@ vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 
 Heuristic heuristic = Heuristic::vmtf;
-// int num_branchings = 0;
+int num_branchings = 0;
 int branchings = 0;
 double max_vm_score = 0;
 
@@ -25,7 +26,7 @@ double interval_growth = 1.5;
 bool phase_saving = true;
 
 vector<Preprocess> preprocessings;
-set<set<int>> eliminated_clauses;  // stores all the clauses that are deleted during preprocessing
+vector<pair<set<int>, int>> eliminated_clause_var_pair;
 
 ofstream* proof_file = nullptr;
 
@@ -117,6 +118,7 @@ bool Heap::empty() {
     return this->heap.size() == 1;
 }
 
+
 void log_new_clause(const set<int>& lits) {
     if (proof_file) {
         for (int lit: lits) {
@@ -137,6 +139,7 @@ void log_deleted_clause(const T& lits) {  // lits could be a set (in preprocessi
     }
 }
 
+
 Variable* lit_to_var(int lit) {
     return &variables[abs(lit)];
 }
@@ -148,6 +151,20 @@ int Variable::id() {
 
 int Variable::var_to_lit() {
     return this->value==Value::t ? this->id() : -(this->id());
+}
+
+Value make_lit_true(int lit) {
+    return lit > 0 ? Value::t : Value::f;
+}
+
+template<class T>
+bool clause_satisfied_check(const T& lits) {
+    for (int l: lits) {
+        if (lit_to_var(l)->value == make_lit_true(l)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void learn_clause(Clause*);
@@ -163,15 +180,7 @@ void Variable::set(Value value, int bd) {
         Clause* cl = watched_occ[i];
 
         // when the clause is satisfied
-        bool found_true = false;
-        for (int lit: cl->lits) {
-            Value lit_true = lit > 0 ? Value::t : Value::f;
-            if (lit_to_var(lit)->value == lit_true) {
-                found_true = true;
-                break;
-            }
-        }
-        if (found_true) {
+        if (clause_satisfied_check(cl->lits)) {
             ++i;
             continue;
         }
@@ -239,6 +248,7 @@ set<int> resolution(const T& cl1, set<int> cl2, int var) {
 
 void exit_unsatisfiable() {
     cout << "s UNSATISFIABLE\n";
+    // cout << num_branchings;
     delete proof_file;
     exit(0);
 }
@@ -267,7 +277,6 @@ void Preprocessor::remove_clause(const set<int>* cl) {
     }
     cl_sig.erase(cl);
     log_deleted_clause(*cl);
-    eliminated_clauses.insert(*cl);
     clauses.erase(*cl);  // the clause has to be removed from clauses in the end, otherwise it leads to dangling pointers in lit_to_cl and cl_sig
 }
 
@@ -297,6 +306,7 @@ void Preprocessor::equivalence_substitution() {
                     }
                     // The original clauses are deleted in the end, because we do not want to delete the two clauses {fst, snd} and {-first, -snd} too early, since they are used in the proof file to justify the newly added clauses.
                     for (const set<int>* cl2: to_be_modified) {
+                        eliminated_clause_var_pair.push_back(make_pair(*cl2, abs(snd)));
                         remove_clause(cl2);
                     }
                 }
@@ -337,6 +347,7 @@ void Preprocessor::niver() {
                 unordered_set<const set<int>*> to_delete_cls = pos_res;
                 to_delete_cls.insert(neg_res.begin(), neg_res.end());
                 for (const set<int>* cl: to_delete_cls) {
+                    eliminated_clause_var_pair.push_back(make_pair(*cl, v));
                     remove_clause(cl);
                 }
                 // cout << "eliminated " << v << "\n";
@@ -773,18 +784,21 @@ void solve() {
             backtrack(0);  // backtracking till the branching depths of variables on the assignments stack are 0 will clear all the branching literals
             restart_count_down = restart_interval;
             restart_interval = restart_interval * interval_growth;
+            // cout << "restart\n";
         }
 
         // We have two deletion strategies: 
         // 1. We keep a budget of learned clauses and the budget grows linearly
         // 2. We do not keep a budget by setting the kept_clauses and kept_clauses_growth to 0. Instead we use the kept_clause_width and kept_clause_unset_lits to control the number of kept clauses.
-        if (deletion_count_down <= 0) {
+        if (deletion_count_down < 0) {
             deletion(kept_clauses);
             kept_clauses += kept_clauses_growth;
             deletion_count_down = learned_clauses.size();
+
+            // cout << "deletion to " << learned_clauses.size() << "\n";
         }
 
-        // ++num_branchings;
+        ++num_branchings;
         // Always pick the variable of highest priority to branch on.
         Variable* picked_var = unassigned_vars.max();
         picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
@@ -866,6 +880,8 @@ int main(int argc, const char* argv[]) {
         cout << "usage: cdcl_solver <path to a cnf file> [heuristics]\n";
         exit(1);
     }
+    
+    restart_count_down = restart_interval;
 
     fromFile(filename);
     set<Variable*> vars;
@@ -880,29 +896,25 @@ int main(int argc, const char* argv[]) {
     
     solve();
 
-    // Preprocessing may have eliminated variables. To get the correct result for all variables in the satisfiable case, we rerun the solver on all variables.
-    if (!preprocessings.empty()) {
-        phase_saving = true;  // phase saving preserves previous assignments
-        for (int i = 1; i < variables.size(); ++i) {
-            if (variables[i].value == Value::unset) {
-                unassigned_vars.insert(&variables[i]);
+    for (int i = eliminated_clause_var_pair.size()-1; i >= 0; --i) {
+        set<int>& cl = eliminated_clause_var_pair[i].first;
+        int var = eliminated_clause_var_pair[i].second;
+        if (!clause_satisfied_check(cl)) {
+            for (int l: cl) {
+                if (abs(l) == var) {
+                    assert(variables[var].value == Value::unset);
+                    variables[var].value = make_lit_true(l);
+                } else if (lit_to_var(l)->value == Value::unset) {
+                    variables[abs(l)].value = Value::t; 
+                }
             }
         }
-        backtrack(-1);  // clears the whole assignment stack
-        for (Clause* cl: orig_clauses) {
-            if (cl->lits.size() == 1) {
-                unit_clauses.push_back(cl);
+        assert(clause_satisfied_check(cl));
+        if (variables[var].value == Value::unset) {
+            if (i == 0 || eliminated_clause_var_pair[i-1].second != var) {
+                variables[var].value = Value::t;
             }
         }
-        // adds back in eliminated clauses
-        for (const set<int>& cl: eliminated_clauses) {
-            if (cl.size() == 1) {
-                add_unit_clause({*cl.begin()}, orig_clauses);
-            } else {
-                add_clause(vector<int>(cl.begin(), cl.end()), orig_clauses, *cl.begin(), *(++cl.begin()));
-            }
-        }
-        solve();
     }
 
     cout << "s SATISFIABLE\n";
