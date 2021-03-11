@@ -26,7 +26,7 @@ double interval_growth = 1.5;
 bool phase_saving = true;
 
 vector<Preprocess> preprocessings;
-vector<pair<set<int>, int>> eliminated_clause_var_pair;
+vector<pair<set<int>, int>> eliminated_clause_var_pair;  // stores eliminated variables together with the removed clauses
 
 ofstream* proof_file = nullptr;
 
@@ -843,9 +843,11 @@ int main(int argc, const char* argv[]) {
             }
             else if (option == "-restart_interval") {
                 restart_interval = stoi(argv[i+1]);
+                ++i;
             }
             else if (option == "-interval_growth") {
                 interval_growth = stod(argv[i+1]);
+                ++i;
             }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
@@ -896,6 +898,7 @@ int main(int argc, const char* argv[]) {
     
     solve();
 
+    // Computes the assignments for eliminated variables
     for (int i = eliminated_clause_var_pair.size()-1; i >= 0; --i) {
         set<int>& cl = eliminated_clause_var_pair[i].first;
         int var = eliminated_clause_var_pair[i].second;
@@ -905,12 +908,12 @@ int main(int argc, const char* argv[]) {
                     assert(variables[var].value == Value::unset);
                     variables[var].value = make_lit_true(l);
                 } else if (lit_to_var(l)->value == Value::unset) {
-                    variables[abs(l)].value = Value::t; 
+                    variables[abs(l)].value = Value::t;  // assigns true to variables that were removed while another variables was eliminated
                 }
             }
         }
         assert(clause_satisfied_check(cl));
-        if (variables[var].value == Value::unset) {
+        if (variables[var].value == Value::unset) {  // if all the clauses that the variable appeears in have already been satisfied
             if (i == 0 || eliminated_clause_var_pair[i-1].second != var) {
                 variables[var].value = Value::t;
             }
