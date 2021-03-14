@@ -8,25 +8,26 @@ vector<Variable*> assignments;
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 
-Heuristic heuristic = Heuristic::vmtf;
-int num_branchings = 0;
+Heuristic heuristic = Heuristic::vsids2;
 int branchings = 0;
 double max_vm_score = 0;
 
 int deletion_count_down = 100;
-int kept_clauses = 500;
-int kept_clauses_growth = 50;
+int kept_clauses = 100;
+int kept_clauses_growth = 400;
 int kept_clause_width = 5;
 int kept_clause_unset_lits = 4;
 int unset_lits_weight = 5;
 
 int restart_interval = 100;
 int restart_count_down = 100;
-double interval_growth = 1.5;
+double interval_growth = 1.2;
 bool phase_saving = true;
 
 vector<Preprocess> preprocessings;
 vector<pair<set<int>, int>> eliminated_clause_var_pair;  // stores eliminated variables together with the removed clauses
+
+set<set<int>> original_formula; // stores the original formula to verify satisfying assignments
 
 ofstream* proof_file = nullptr;
 
@@ -248,7 +249,6 @@ set<int> resolution(const T& cl1, set<int> cl2, int var) {
 
 void exit_unsatisfiable() {
     cout << "s UNSATISFIABLE\n";
-    // cout << num_branchings;
     delete proof_file;
     exit(0);
 }
@@ -292,7 +292,6 @@ void Preprocessor::equivalence_substitution() {
                 int snd = *(++cl1.begin());
                 if (clauses.count({-fst, -snd}) > 0) {
                     changed = true;
-                    // cout << "equisub: eliminated " << abs(snd) << "\n";
                     unordered_set<const set<int>*> to_be_modified = lit_to_cl[snd];
                     to_be_modified.insert(lit_to_cl[-snd].begin(), lit_to_cl[-snd].end());
                     for (const set<int>* cl2: to_be_modified) {
@@ -350,7 +349,6 @@ void Preprocessor::niver() {
                     eliminated_clause_var_pair.push_back(make_pair(*cl, v));
                     remove_clause(cl);
                 }
-                // cout << "eliminated " << v << "\n";
                 changed = true;
             }
             done:;
@@ -409,7 +407,6 @@ void Preprocessor::eliminate_subsumed_clauses() {
         for (const set<int>* cl2: find_subsumed(cl1)) {
             if (&cl1 != cl2) {
                 remove_clause(cl2);
-                // cout << "eliminated clause\n";
             }
         }
     }
@@ -431,7 +428,6 @@ void Preprocessor::self_subsume() {
                 new_cl.erase(-v);
                 add_clause(new_cl);
                 remove_clause(cl2);
-                // cout << "strengthened clause\n";
             }
             cl_sig.erase(&subset);
         }
@@ -479,6 +475,8 @@ void fromFile(string path) {
                 lits_set.insert(lit);
                 file >> lit;
             }
+
+            original_formula.insert(lits_set);
             
             // Only process non-tautological clauses.
             if (tautology_check(lits_set)) { continue; }
@@ -784,7 +782,6 @@ void solve() {
             backtrack(0);  // backtracking till the branching depths of variables on the assignments stack are 0 will clear all the branching literals
             restart_count_down = restart_interval;
             restart_interval = restart_interval * interval_growth;
-            // cout << "restart\n";
         }
 
         // We have two deletion strategies: 
@@ -794,11 +791,8 @@ void solve() {
             deletion(kept_clauses);
             kept_clauses += kept_clauses_growth;
             deletion_count_down = learned_clauses.size();
-
-            // cout << "deletion to " << learned_clauses.size() << "\n";
         }
 
-        ++num_branchings;
         // Always pick the variable of highest priority to branch on.
         Variable* picked_var = unassigned_vars.max();
         picked_var->set(pick_polarity(picked_var), assignments.empty() ? 1 : assignments.back()->bd+1);
@@ -849,6 +843,9 @@ int main(int argc, const char* argv[]) {
                 interval_growth = stod(argv[i+1]);
                 ++i;
             }
+            else if (option == "-no_phase_saving") {
+                phase_saving = false;
+            }
             else if (option == "-proof") {
                 proof_file = new ofstream(argv[i+1]);
                 ++i;
@@ -864,13 +861,14 @@ int main(int argc, const char* argv[]) {
                 cout << "-subs\tapply subsumption testing in preprocessing\n";
                 cout << "-selfsubs\tapply self-subsuming resolution in preprocessing\n";
                 cout << "\n";
-                cout << "-kept_clauses <int>\tinitial number of learned clauses to be kept\n";
+                cout << "-kept_clauses <int>\tinitial budget of learned clauses to be kept\n";
                 cout << "-kept_clauses_growth <int>\trate by which kept_clauses grows\n";
-                cout << "-kept_clause_unset_lits <int>\tupper bound of number of unset literals in kept learned clauses\n";
-                cout << "-kept_clause_width <int>\tupper bound of width of kept learned clauses\n";
+                cout << "-kept_clause_unset_lits <int>\tupper bound of number of unset literals in kept learned clauses independent of budget\n";
+                cout << "-kept_clause_width <int>\tupper bound of width of kept learned clauses independent of budget\n";
                 cout << "-unset_lits_weight <int>\tthe weight for kept_clause_unset_lits while computing the scores for learned clauses";
                 cout << "-restart_inverval <int>\tthe initial interval of restarts\n";
                 cout << "-inverval_growth <double>\tfactor by which restart_interval grows\n";
+                cout << "-no_phase_saving\tdisable phase saving\n";
                 cout << "-proof <filename>\twrites the proof in DRAT format into a file\n";
                 exit(1);
             }
@@ -920,13 +918,17 @@ int main(int argc, const char* argv[]) {
         }
     }
 
+    // Verifies the satisfying assignment when debugging is enabled.
+    for (const set<int>& clause: original_formula) {
+        assert(clause_satisfied_check(clause));
+    }
+
     cout << "s SATISFIABLE\n";
     cout << "v ";
     for (int i = 1; i < variables.size(); ++i) {
         cout << ((variables[i].value == Value::t) ? i : -i) << " ";
     }
     cout << "0\n";
-    // cout << num_branchings;
     delete proof_file;
     return 0;
 }
