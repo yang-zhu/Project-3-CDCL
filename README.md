@@ -6,7 +6,14 @@
 
 - **cdcl_solver.cpp**
 
-    `cdcl_solver.cpp` implements a CDCL SAT solver. 
+    `cdcl_solver.cpp` implements a CDCL SAT solver with watched literals and 1UIP clause learning. It has the following features:
+    - The VSIDS and VMTF branching heuristics: For VSIDS, we have two variants. The first variant is by-the-book: new occurrences in conflict clauses don't directly affect the variable ordering, which are instead resorted from time to time. We still use the heap-based priority queue from our DPLL solver. Our second variant of VSIDS updates the score and position in the heap directly.
+    For VMTF, we also make use of the heap. Instead of actually maintaining a list of variables, we simulate the move-to-front of VMTF by assigning the moved variables a bigger score than all other variables.
+    - Clause Deletion: We implemented a deletion strategy based on a growing budget of learned clauses. We select the clauses to be delted based on their size and their number of unassigned literals.
+    - Restarts: We implemented a fixed and a geometric restart policy. We also do phase-saving both for restars and for normal backtracking.
+    - Learned clauses are minimized by self-subsuming resolution with reason clauses.
+    - Preprocessing techniques: equivalence substitution, NiVER, subsumption testing and self-subsuming resolution. For satisfiable formulas we reconstruct the satisfying assignments from the sequence of eliminated variables and clauses.
+    - Certificates for unsatisfiable instances in DRAT format. This also works with our preprocessing techniques.
 
     To compile `cdcl_solver.cpp`:
     ```

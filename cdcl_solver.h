@@ -31,7 +31,7 @@ enum class Value {
 };
 
 struct Variable {
-    int bd = -1;
+    int bd = -1; // branching depth
     Value value = Value::unset;
     Value old_value = Value::unset;  // stores the old value for phase saving
     vector<Clause*> pos_watched_occ;
@@ -79,7 +79,10 @@ struct Heap {  // a max-heap
 };
 
 enum class Preprocess {
-    equisub, subs, niver, selfsubs
+    equisub, // equivalence substitution 
+    subs,    // subsumption testing
+    niver,   // Non-increasing Variable Elimination Resolution (NiVER)
+    selfsubs // self-subsuming resolution
 };
 
 struct Preprocessor {
@@ -87,7 +90,7 @@ struct Preprocessor {
     // Maps every literal to the clauses it appears in. The values are pointers pointing into the clauses set.
     unordered_map<int, unordered_set<const set<int>*>> lit_to_cl;
     // Maps every clause to its signature for fast subsumption testing.
-    unordered_map <const set<int>*, uint64_t> cl_sig;
+    unordered_map<const set<int>*, uint64_t> cl_sig;
 
     Preprocessor(set<set<int>>& clauses): clauses(clauses) {
         for (const set<int>& cl: clauses) {
@@ -98,7 +101,7 @@ struct Preprocessor {
         }
     }
 
-    uint64_t signature(const set<int>& cl);
+    static uint64_t signature(const set<int>& cl);
     set<int> get_all_vars();
     void add_clause(const set<int>& cl);
     void remove_clause(const set<int>* cl);

@@ -1,16 +1,17 @@
 #include "cdcl_solver.h"
-#include <utility>
 
 vector<Variable> variables;
-vector<Clause*> orig_clauses;
-vector<Clause*> learned_clauses;
-vector<Variable*> assignments;
+
+vector<Clause*> orig_clauses; // original clauses cannot be deleted
+vector<Clause*> learned_clauses;  // learned clauses can be deleted
+
+vector<Variable*> assignments; // the assignment stack
 vector<Clause*> unit_clauses;
 Heap unassigned_vars;
 
 Heuristic heuristic = Heuristic::vsids2;
 int branchings = 0;
-double max_vm_score = 0;
+double max_vm_score = 0; // maximal VMTF score assigned so far
 
 int deletion_count_down = 100;
 int kept_clauses = 100;
@@ -19,8 +20,8 @@ int kept_clause_width = 5;
 int kept_clause_unset_lits = 4;
 int unset_lits_weight = 5;
 
-int restart_interval = 100;
-int restart_count_down = 100;
+int restart_interval = 200;
+int restart_count_down;
 double interval_growth = 1.2;
 bool phase_saving = true;
 
@@ -277,7 +278,7 @@ void Preprocessor::remove_clause(const set<int>* cl) {
     }
     cl_sig.erase(cl);
     log_deleted_clause(*cl);
-    clauses.erase(*cl);  // the clause has to be removed from clauses in the end, otherwise it leads to dangling pointers in lit_to_cl and cl_sig
+    clauses.erase(*cl);
 }
 
 // Equivalence Substitution
@@ -336,7 +337,7 @@ void Preprocessor::niver() {
                             new_clauses.insert(move(new_cl)); 
                         }
                         if (new_clauses.size() > occurrences) {
-                            goto done;
+                            goto next_var;
                         }
                     }
                 }
@@ -351,7 +352,7 @@ void Preprocessor::niver() {
                 }
                 changed = true;
             }
-            done:;
+            next_var:;
         }
     } while(changed);
 }
@@ -383,7 +384,7 @@ bool Preprocessor::subsumes(const set<int>& cl1, const set<int>& cl2) {
 // Collects clauses that are subsumed by the clause subset.
 vector<const set<int>*> Preprocessor::find_subsumed(const set<int>& subset) {
     vector<const set<int>*> subsumed;
-    // for efficiency we only consider literals that appear least often
+    // for efficiency we only consider the literal that appears least often
     int min_size = numeric_limits<int>::max();
     int min_lit = 0;
     for (int l: subset) {
@@ -421,8 +422,8 @@ void Preprocessor::self_subsume() {
             subset.erase(v);
             subset.insert(-v);
             // &subset does not exist in cl_sig. Therefore we add it in cl_sig on the fly and delete it afterwards.
-            cl_sig[&subset] = signature(subset);  
-            // If a clause D = D' ∪ ¬a is subsumed by (C'\a) ∪ ¬a, then D can be strengthened to D'.
+            cl_sig[&subset] = signature(subset);
+            // If a clause D is subsumed by (C\a) ∪ ¬a, then D can be strengthened to D\¬a.
             for (const set<int>* cl2: find_subsumed(subset)) {
                 set<int> new_cl = *cl2;
                 new_cl.erase(-v);
@@ -511,16 +512,16 @@ void fromFile(string path) {
 
 Clause* add_unit_clause(const vector<int>& lits, vector<Clause*>& clauses) {
     int first = lits[0];
-    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(first)});  // every clause is created on the heap
-    Clause* cl = clauses.back();
+    Clause* cl = new Clause{lits, lit_to_var(first), lit_to_var(first)};  // every clause is created on the heap
+    clauses.push_back(cl);
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     unit_clauses.push_back(cl);
     return cl;
 }
 
 Clause* add_clause(const vector<int>& lits, vector<Clause*>& clauses, int first, int second) {
-    clauses.push_back(new Clause{lits, lit_to_var(first), lit_to_var(second)});
-    Clause* cl = clauses.back();
+    Clause* cl = new Clause{lits, lit_to_var(first), lit_to_var(second)};
+    clauses.push_back(cl);
     (first > 0 ? variables[first].pos_watched_occ : variables[-first].neg_watched_occ).push_back(cl);
     (second > 0 ? variables[second].pos_watched_occ : variables[-second].neg_watched_occ).push_back(cl);
     return cl;   
@@ -699,7 +700,7 @@ int clause_score (Clause* cl) {
     for (int l: cl->lits) {
         if (lit_to_var(l)->value == Value::unset) { ++unset_lits; }
     }
-    // learned clauses within a certain width and a contain certain amount of unassigned literals are kept forever
+    // learned clauses within a certain width and a certain amount of unassigned literals are not deleted
     if (unset_lits <= kept_clause_unset_lits && cl->lits.size() <= kept_clause_width) {
        return 0;
     }
@@ -852,24 +853,26 @@ int main(int argc, const char* argv[]) {
             }
             else {
                 cout << "Unknown argument: " << option << "\nPossible options:\n";
-                cout << "-vsids1\tuse the VSIDS heuristic (by-the-book implementation)\n";
-                cout << "-vsids2\tuse the VSIDS heuristic (directly update the score in the heap)\n";
-                cout << "-vmtf\tuse the VMTF heuristic\n";
+                cout << "-vsids1    use the VSIDS heuristic (by-the-book implementation)\n";
+                cout << "-vsids2    use the VSIDS heuristic (directly update the score in the heap)\n";
+                cout << "-vmtf      use the VMTF heuristic\n";
                 cout << "\n";
-                cout << "-equisub\tapply equivalence substitution in preprocessing\n";
-                cout << "-niver\tapply NiVER in preprocessing\n";
-                cout << "-subs\tapply subsumption testing in preprocessing\n";
-                cout << "-selfsubs\tapply self-subsuming resolution in preprocessing\n";
+                cout << "-equisub   apply equivalence substitution in preprocessing\n";
+                cout << "-niver     apply NiVER in preprocessing\n";
+                cout << "-subs      apply subsumption testing in preprocessing\n";
+                cout << "-selfsubs  apply self-subsuming resolution in preprocessing\n";
                 cout << "\n";
-                cout << "-kept_clauses <int>\tinitial budget of learned clauses to be kept\n";
-                cout << "-kept_clauses_growth <int>\trate by which kept_clauses grows\n";
-                cout << "-kept_clause_unset_lits <int>\tupper bound of number of unset literals in kept learned clauses independent of budget\n";
-                cout << "-kept_clause_width <int>\tupper bound of width of kept learned clauses independent of budget\n";
-                cout << "-unset_lits_weight <int>\tthe weight for kept_clause_unset_lits while computing the scores for learned clauses";
-                cout << "-restart_inverval <int>\tthe initial interval of restarts\n";
-                cout << "-inverval_growth <double>\tfactor by which restart_interval grows\n";
-                cout << "-no_phase_saving\tdisable phase saving\n";
-                cout << "-proof <filename>\twrites the proof in DRAT format into a file\n";
+                cout << "-kept_clauses <int>            initial budget of learned clauses to be kept\n";
+                cout << "-kept_clauses_growth <int>     rate by which kept_clauses grows\n";
+                cout << "-kept_clause_unset_lits <int>  upper bound of number of unset literals in kept learned clauses independent of budget\n";
+                cout << "-kept_clause_width <int>       upper bound of width of kept learned clauses independent of budget\n";
+                cout << "-unset_lits_weight <int>       the weight for kept_clause_unset_lits while computing the scores for learned clauses\n";
+                cout << "\n";
+                cout << "-restart_inverval <int>    the initial interval of restarts\n";
+                cout << "-inverval_growth <double>  factor by which restart_interval grows\n";
+                cout << "-no_phase_saving           disable phase saving\n";
+                cout << "\n";
+                cout << "-proof <filename>      writes the proof in DRAT format into a file\n";
                 exit(1);
             }
         } else { filename = option; }
@@ -877,7 +880,7 @@ int main(int argc, const char* argv[]) {
     // When no file name is given.
     if (filename == "") {
         cout << "No filename specified\n";
-        cout << "usage: cdcl_solver <path to a cnf file> [heuristics]\n";
+        cout << "usage: cdcl_solver <path to a cnf file> [options]\n";
         exit(1);
     }
     
@@ -906,12 +909,13 @@ int main(int argc, const char* argv[]) {
                     assert(variables[var].value == Value::unset);
                     variables[var].value = make_lit_true(l);
                 } else if (lit_to_var(l)->value == Value::unset) {
-                    variables[abs(l)].value = Value::t;  // assigns true to variables that were removed while another variables was eliminated
+                    variables[abs(l)].value = Value::t;  // assigns an arbitrary value to variables that were removed while another variables was eliminated
                 }
             }
         }
         assert(clause_satisfied_check(cl));
-        if (variables[var].value == Value::unset) {  // if all the clauses that the variable appeears in have already been satisfied
+        if (variables[var].value == Value::unset) {
+            // If all the clauses the variable has been eliminated from were already satisfied, pick an arbitrary value.
             if (i == 0 || eliminated_clause_var_pair[i-1].second != var) {
                 variables[var].value = Value::t;
             }
